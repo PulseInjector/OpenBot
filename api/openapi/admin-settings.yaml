@@ -1066,7 +1066,13 @@ components:
       pattern: ^[^\x00]*\S[^\x00]*$
     OrganizationSettingValues:
       type: object
+      description: >-
+        The organization's settings. Context is read only: it comes back with
+        the settings and is never sent.
+      additionalProperties: false
       properties:
+        context:
+          $ref: '#/components/schemas/OrganizationSettingsContext'
         ssoRequired:
           type: boolean
           description: >-
@@ -1123,8 +1129,7 @@ components:
     OrganizationSettings:
       allOf:
         - $ref: '#/components/schemas/OrganizationSettingValues'
-        - type: object
-          required:
+        - required:
             - ssoRequired
             - actionRecording
             - inactiveComputerDays
@@ -1134,9 +1139,6 @@ components:
             - proactiveDailyRuns
             - modelSelection
             - context
-          properties:
-            context:
-              $ref: '#/components/schemas/OrganizationSettingsContext'
     OrganizationSettingsContext:
       type: object
       readOnly: true
