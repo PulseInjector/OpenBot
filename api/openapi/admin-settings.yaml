@@ -1073,6 +1073,7 @@ components:
       properties:
         context:
           $ref: '#/components/schemas/OrganizationSettingsContext'
+          readOnly: true
         ssoRequired:
           type: boolean
           description: >-
