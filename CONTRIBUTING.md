@@ -9,13 +9,20 @@ repository files.
 
 ## Start a Change
 
-Use `aooo/main` as the integration baseline. It starts at the OpenBot commit selected by the aooo bot
-implementation plan. Do not use the upstream `main` as the base for aooo bot work unless the project
-explicitly decides to update its upstream baseline.
+Use `aooo/main` as the fork's integration baseline. It starts at the OpenBot commit selected by the
+aooo bot implementation plan. Do not use the upstream `main` as the base for aooo bot work unless the
+project explicitly decides to update its upstream baseline.
 
-Check the working tree before starting. Create one branch per logical change from `aooo/main`, using
-a short lowercase name with a purpose prefix such as `feat/`, `fix/`, `docs/`, or `chore/`. Do not
-include agent names, generated identifiers, or temporary status words in branch names.
+Stage one is integrated on `feat/local-bot-workbench`, created from `aooo/main`. Create each stage-one
+change branch from the current tip of `feat/local-bot-workbench` and target that branch in its pull
+request. Merge the internal pull requests in dependency order. After the complete local Bot workbench
+passes stage-one acceptance, open the final pull request from `feat/local-bot-workbench` to
+`aooo/main`. Do not merge stage-one work directly into `aooo/main` before that acceptance.
+
+Check the working tree before starting. Use one branch per logical change, with a short lowercase
+name and a purpose prefix such as `feat/`, `fix/`, `docs/`, or `chore/`. Name the behavior or artifact,
+not the phase number. Do not include agent names, generated identifiers, or temporary status words in
+branch names.
 
 ## Make and Check the Change
 
@@ -38,10 +45,11 @@ the pull request description.
 
 ## Share and Review
 
-Push the change branch and open a pull request in `PulseInjector/OpenBot` with base `aooo/main`.
-Use the repository's existing pull request template. Keep the pull request focused on one logical
-change, address review feedback on the same branch, and merge only after applicable checks and review
-are complete.
+Push the change branch and open a pull request in `PulseInjector/OpenBot` with the base described
+above: `feat/local-bot-workbench` for internal stage-one changes, then `aooo/main` for the accepted
+workbench. Use the repository's existing pull request template. Keep each pull request focused on one
+logical change, address review feedback on the same branch, and merge only after applicable checks
+and review are complete.
 
 The inherited CI workflow runs on every pull request, including documentation-only changes. Its
 `test:ci` step runs the root test suite with a minimum test-count check. The desktop workflow is
