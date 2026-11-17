@@ -32,7 +32,7 @@ boundary. It does not claim that a Bot completed the live workflow.
    `bun install --frozen-lockfile`. Use an isolated PostgreSQL database for this deployment and a
    separate `TEST_DATABASE_URL` for integration tests. Follow `docs/development.md` for Docker and
    `bash scripts/start.sh`. The inherited OpenBot stack still needs Intelligence configuration;
-   running without it is a later stage-one PR, not a property of this fixture PR.
+   running without it belongs to a later stage-one work unit, not this fixture setup.
 2. Configure one real model through the existing provider settings. Keep model keys, database URLs,
    session cookies, and OAuth credentials in the ignored `.env` or local environment, never in this
    directory. Record the model name and relevant configuration names in local run notes, without
