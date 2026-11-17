@@ -3,6 +3,10 @@
 This guide covers changes to the aooo bot fork. The repository and environment setup are described
 in [README.md](README.md) and [docs/configuration.md](docs/configuration.md).
 
+Before starting a project task, read `.local/project-context.md` if it exists. It points to private
+planning material and local working conventions; keep its links and any credentials out of tracked
+repository files.
+
 ## Start a Change
 
 Use `aooo/main` as the integration baseline. It starts at the OpenBot commit selected by the aooo bot
