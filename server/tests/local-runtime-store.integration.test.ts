@@ -1,0 +1,223 @@
+import { afterAll, beforeAll, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
+import { inArray } from "drizzle-orm";
+import { createDatabase } from "../src/db/client";
+import { agents, localThreadBindings, users } from "../src/db/schema";
+import {
+  createLocalRuntimeStore,
+  LocalExecutionLeaseError,
+  LocalRuntimeConflictError,
+} from "../src/local-runtime/store";
+import { TEST_POOL, testDatabaseUrl } from "./support/database";
+
+const database = createDatabase(testDatabaseUrl(), TEST_POOL);
+const prefix = `local-runtime-${randomUUID()}`;
+const ownerId = `${prefix}-owner`;
+const agentId = `${prefix}-agent`;
+const threadIds: string[] = [];
+const store = createLocalRuntimeStore(database);
+
+beforeAll(async () => {
+  await database.insert(users).values({
+    id: ownerId,
+    email: `${ownerId}@example.test`,
+  });
+  await database.insert(agents).values({
+    id: agentId,
+    name: "Local runtime integration Bot",
+    type: "built_in",
+    configuration: {},
+  });
+});
+
+afterAll(async () => {
+  if (threadIds.length) {
+    await database
+      .delete(localThreadBindings)
+      .where(inArray(localThreadBindings.threadId, threadIds));
+  }
+  await database.delete(agents).where(inArray(agents.id, [agentId]));
+  await database.delete(users).where(inArray(users.id, [ownerId]));
+  await database.$client.close();
+});
+
+function thread() {
+  const id = `${prefix}-thread-${threadIds.length}`;
+  threadIds.push(id);
+  return id;
+}
+
+function submission(
+  threadId: string,
+  requestKey = "request-1",
+  requestHash = "hash-1",
+) {
+  return {
+    threadId,
+    ownerUserId: ownerId,
+    agentId,
+    actorId: ownerId,
+    source: "manual" as const,
+    requestKey,
+    requestHash,
+  };
+}
+
+test("concurrent identical submissions create one durable run", async () => {
+  const threadId = thread();
+  const [left, right] = await Promise.all([
+    store.submit(submission(threadId)),
+    store.submit(submission(threadId)),
+  ]);
+
+  expect(left.run.id).toBe(right.run.id);
+  expect([left.created, right.created].filter(Boolean)).toHaveLength(1);
+  expect(
+    (await store.readHistory({ threadId, actorId: ownerId })).runs,
+  ).toHaveLength(1);
+  await expect(
+    store.submit(submission(threadId, "request-1", "different-hash")),
+  ).rejects.toBeInstanceOf(LocalRuntimeConflictError);
+});
+
+test("event order, message projection, and history survive a fresh store instance", async () => {
+  const threadId = thread();
+  const { run } = await store.submit(submission(threadId));
+  const token = await store.claimAttempt({
+    threadId,
+    runId: run.id,
+    owner: "worker-a",
+    leaseMs: 30_000,
+  });
+  const first = await store.append(token, {
+    kind: "message.upsert",
+    messageId: "assistant-1",
+    role: "assistant",
+    content: { text: "first" },
+  });
+  const second = await store.append(token, {
+    kind: "message.upsert",
+    messageId: "assistant-1",
+    role: "assistant",
+    content: { text: "final" },
+  });
+
+  const restartedStore = createLocalRuntimeStore(database);
+  const history = await restartedStore.readHistory({
+    threadId,
+    actorId: ownerId,
+  });
+  expect(history.events.map((event) => event.sequence)).toEqual([1, 2, 3, 4]);
+  expect([first.sequence, second.sequence]).toEqual([3, 4]);
+  expect(history.messages).toMatchObject([
+    {
+      messageId: "assistant-1",
+      content: { text: "final" },
+      lastSequence: second.sequence,
+    },
+  ]);
+  expect(history.runs[0]?.id).toBe(run.id);
+  expect(history.attempts[0]?.generation).toBe(token.generation);
+});
+
+test("one current attempt wins and an expired generation cannot append or start an operation", async () => {
+  let currentTime = new Date("2026-11-18T07:00:00.000Z");
+  const timedStore = createLocalRuntimeStore(database, {
+    now: () => currentTime,
+  });
+  const threadId = thread();
+  const { run } = await timedStore.submit(submission(threadId));
+  const claims = await Promise.allSettled([
+    timedStore.claimAttempt({
+      threadId,
+      runId: run.id,
+      owner: "worker-a",
+      leaseMs: 100,
+    }),
+    timedStore.claimAttempt({
+      threadId,
+      runId: run.id,
+      owner: "worker-b",
+      leaseMs: 100,
+    }),
+  ]);
+  const current = claims.find((result) => result.status === "fulfilled");
+  const competing = claims.find((result) => result.status === "rejected");
+  expect(current?.status).toBe("fulfilled");
+  expect(competing?.status).toBe("rejected");
+  if (current?.status !== "fulfilled") throw new Error("No lease was claimed.");
+  const staleToken = current.value;
+
+  currentTime = new Date(currentTime.getTime() + 101);
+  const nextToken = await timedStore.claimAttempt({
+    threadId,
+    runId: run.id,
+    owner: "worker-c",
+    leaseMs: 1_000,
+  });
+  expect(nextToken.generation).toBeGreaterThan(staleToken.generation);
+  await expect(
+    timedStore.append(staleToken, {
+      kind: "message.upsert",
+      messageId: "stale-message",
+      role: "assistant",
+      content: { text: "must not be saved" },
+    }),
+  ).rejects.toBeInstanceOf(LocalExecutionLeaseError);
+  await expect(
+    timedStore.beginOperation(staleToken, {
+      toolCallId: "stale-tool-call",
+      toolName: "write_document",
+      parameters: { pageId: "page-1", content: "must not be dispatched" },
+      actorId: ownerId,
+    }),
+  ).rejects.toBeInstanceOf(LocalExecutionLeaseError);
+  await expect(
+    timedStore.beginOperation(nextToken, {
+      toolCallId: "wrong-actor-tool-call",
+      toolName: "write_document",
+      parameters: { pageId: "page-1" },
+      actorId: "another-actor",
+    }),
+  ).rejects.toBeInstanceOf(LocalRuntimeConflictError);
+  const started = await timedStore.beginOperation(nextToken, {
+    toolCallId: "tool-call-1",
+    toolName: "write_document",
+    target: "page-1",
+    parameters: { pageId: "page-1", content: "expected" },
+    actorId: ownerId,
+  });
+  expect(started.created).toBe(true);
+  const dispatched = await timedStore.markOperationDispatched(
+    nextToken,
+    started.operation.id,
+  );
+  expect(dispatched.dispatched).toBe(true);
+  const settled = await timedStore.settleOperation(
+    nextToken,
+    started.operation.id,
+    "succeeded",
+    { pageId: "page-1", receipt: "verified" },
+  );
+  expect(settled.status).toBe("succeeded");
+  const finished = await timedStore.finishAttempt(nextToken, "succeeded", {
+    resultRef: "result-1",
+  });
+  expect(finished.type).toBe("attempt.succeeded");
+
+  const history = await timedStore.readHistory({ threadId, actorId: ownerId });
+  expect(history.events.map((event) => event.sequence)).toEqual([
+    1, 2, 3, 4, 5, 6, 7,
+  ]);
+  expect(history.messages).toHaveLength(0);
+  expect(history.runs[0]?.status).toBe("succeeded");
+  expect(history.attempts[1]?.status).toBe("succeeded");
+  expect(history.operations).toMatchObject([
+    {
+      toolCallId: "tool-call-1",
+      status: "succeeded",
+      dispatched: true,
+      result: { pageId: "page-1", receipt: "verified" },
+    },
+  ]);
+});

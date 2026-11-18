@@ -1,0 +1,55 @@
+{
+  "checkedOn": "2026-11-18",
+  "branch": "feat/local-bot-workbench",
+  "database": "isolated local PostgreSQL 17.9",
+  "checks": {
+    "migrationsApplied": true,
+    "schemaGenerationClean": true,
+    "integrationTests": {
+      "passed": 3,
+      "assertions": 24
+    },
+    "workspaceTypecheck": true,
+    "schemaAndMigrationTests": {
+      "passed": 21,
+      "assertions": 46
+    }
+  },
+  "observations": [
+    {
+      "scenario": "concurrent-submit-deduplication",
+      "sameRunId": true,
+      "createdCount": 1,
+      "runCount": 1
+    },
+    {
+      "scenario": "message-projection-and-reload",
+      "eventTypesBySequence": [
+        "run.queued",
+        "attempt.started",
+        "message.upsert",
+        "message.upsert"
+      ],
+      "projectionLastSequence": 4,
+      "projectionContent": "final"
+    },
+    {
+      "scenario": "lease-fencing-and-operation-lifecycle",
+      "attemptGenerations": [1, 2],
+      "staleAppendRejected": true,
+      "staleOperationRejected": true,
+      "eventTypesBySequence": [
+        "run.queued",
+        "attempt.started",
+        "attempt.started",
+        "operation.intent",
+        "operation.dispatched",
+        "operation.succeeded",
+        "attempt.succeeded"
+      ],
+      "operationResultPersisted": true,
+      "runStatus": "succeeded",
+      "attemptStatus": "succeeded"
+    }
+  ]
+}
