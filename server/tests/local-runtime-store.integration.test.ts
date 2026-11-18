@@ -279,6 +279,11 @@ test("stop closes operation admission while a dispatched late result still settl
     stopSettled = true;
   });
   expect(stopping).toBeDefined();
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    if (await store.stopRequested(token)) break;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  expect(await store.stopRequested(token)).toBe(true);
   await expect(
     executeRecordedTool({
       recorder,
