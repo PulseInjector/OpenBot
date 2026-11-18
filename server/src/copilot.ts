@@ -25,6 +25,10 @@ import { HeadlessToolsMiddleware } from "@openbot/toolkit/headless-tools";
 import { sanitizeSeededHistory } from "@openbot/toolkit/history-sanitize";
 import { executeNativeApprovalTool } from "@openbot/toolkit/native-approval";
 import { historyOrEmpty } from "@openbot/toolkit/thread-history";
+import {
+  executeRecordedTool,
+  type ToolOperationRecorder,
+} from "@openbot/toolkit/tool-operation";
 import { defer, from, switchMap } from "rxjs";
 import { z } from "zod";
 import {
@@ -397,6 +401,7 @@ export function builtInAgentConfiguration(
   standingInstructions?: string | null,
   planModel?: PlanModel,
   learnedSkills?: LearnedSkillInvocation,
+  operations?: ToolOperationRecorder,
 ): BuiltInAgentConfiguration {
   if (!apiKey && !planModel) {
     return {
@@ -471,13 +476,22 @@ export function builtInAgentConfiguration(
           tools: allTools.map((tool) => ({
             ...tool,
             execute: (args: unknown, execution?: { toolCallId?: string }) =>
-              executeNativeApprovalTool(
-                tool.name,
-                args,
-                execution?.toolCallId,
-                tools.find((granted) => granted.name === tool.name)?.initiator,
-                () => tool.execute(args),
-              ),
+              executeRecordedTool({
+                recorder: operations,
+                toolCallId: execution?.toolCallId,
+                toolName: tool.name,
+                parameters: args,
+                validate: (parameters) => tool.parameters.parse(parameters),
+                execute: (validatedArgs) =>
+                  executeNativeApprovalTool(
+                    tool.name,
+                    validatedArgs,
+                    execution?.toolCallId,
+                    tools.find((granted) => granted.name === tool.name)
+                      ?.initiator,
+                    () => tool.execute(args),
+                  ),
+              }),
           })),
           maxSteps: TOOL_STEPS,
         }
@@ -550,6 +564,7 @@ export async function buildAgents(
   markAttachmentsSent?: MarkAttachmentsSent,
   acquireLearnedSkills?: AcquireLearnedSkills,
   loadPersonalMemory?: LoadPersonalMemory,
+  operations?: ToolOperationRecorder,
 ): Promise<Record<string, AbstractAgent>> {
   let vendors: readonly string[] = [];
   try {
@@ -606,6 +621,7 @@ export async function buildAgents(
           loadAttachment,
           markAttachmentsSent,
           acquireLearnedSkills,
+          operations,
         );
         if (loadPersonalMemory)
           built.use(new PersonalMemoryMiddleware(agent.id, loadPersonalMemory));
@@ -868,6 +884,7 @@ async function buildAgent(
   /** How this run records that those files were sent. See {@link buildAgents}. */
   markAttachmentsSent?: MarkAttachmentsSent,
   acquireLearnedSkills?: AcquireLearnedSkills,
+  operations?: ToolOperationRecorder,
 ): Promise<AbstractAgent> {
   if (agent.type === "unavailable") {
     return new UnavailableAgent(agent);
@@ -971,6 +988,7 @@ async function buildAgent(
       acquireLearnedSkills,
       handoff,
       initiator,
+      operations,
     );
   }
 
@@ -1004,6 +1022,7 @@ async function buildAgent(
             )
           : undefined,
         learnedSkills,
+        operations,
       ),
       {
         observe: observeModelConnection,
@@ -1284,6 +1303,7 @@ function remoteAgentWithStandingRole(
   acquireLearnedSkills?: AcquireLearnedSkills,
   coordination?: HandoffForRun,
   initiator?: AuditInitiator,
+  operations?: ToolOperationRecorder,
 ) {
   /*
    * What this Bot holds, as a second standing message.
@@ -1461,9 +1481,11 @@ function remoteAgentWithStandingRole(
                 unknown
               >,
             },
+            validate: (args) => tool.parameters.parse(args),
             execute: (args) => tool.execute(args),
           })),
           initiator,
+          operations,
         ).run(prepared, next);
       }),
     );
@@ -1612,6 +1634,7 @@ export async function resolveRuntimeAgents(
   markAttachmentsSent?: MarkAttachmentsSent,
   acquireLearnedSkills?: AcquireLearnedSkills,
   loadPersonalMemory?: LoadPersonalMemory,
+  operations?: ToolOperationRecorder,
 ): Promise<Record<string, AbstractAgent>> {
   const all = await loadAgents();
   if (all.length === 0) {
@@ -1648,6 +1671,7 @@ export async function resolveRuntimeAgents(
     markAttachmentsSent,
     acquireLearnedSkills,
     loadPersonalMemory,
+    operations,
   );
 }
 

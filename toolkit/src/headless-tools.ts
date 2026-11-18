@@ -12,6 +12,10 @@ import {
 import { Observable, type Subscription } from "rxjs";
 import { withApprovalContext } from "./continuation";
 import type { AuditInitiator } from "./initiator";
+import {
+  executeRecordedTool,
+  type ToolOperationRecorder,
+} from "./tool-operation";
 
 /** Client tools supplied by OpenBot when the caller has no browser. */
 export type HeadlessTool = {
@@ -21,6 +25,7 @@ export type HeadlessTool = {
    * call it makes anyway gets a governed refusal rather than going unanswered.
    */
   hidden?: boolean;
+  validate?: (args: unknown) => unknown;
   execute(
     args: unknown,
     context: { toolCallId: string; signal: AbortSignal },
@@ -57,6 +62,7 @@ export class HeadlessToolsMiddleware extends Middleware {
   constructor(
     private readonly tools: HeadlessTool[],
     private readonly initiator?: AuditInitiator,
+    private readonly operations?: ToolOperationRecorder,
   ) {
     super();
     const names = tools.map((tool) => tool.definition.name);
@@ -204,9 +210,18 @@ export class HeadlessToolsMiddleware extends Middleware {
                 initiator: this.initiator,
               };
               const result = await withApprovalContext(continuation, () =>
-                tool.execute(args, {
+                executeRecordedTool({
+                  recorder: this.operations,
                   toolCallId: call.id,
-                  signal: controller.signal,
+                  toolName: call.function.name,
+                  parameters: args,
+                  validate: tool.validate,
+                  disconnected: () => subscriber.closed,
+                  execute: (validatedArgs) =>
+                    tool.execute(validatedArgs, {
+                      toolCallId: call.id,
+                      signal: controller.signal,
+                    }),
                 }),
               );
               content =

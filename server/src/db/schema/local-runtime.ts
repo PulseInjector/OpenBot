@@ -81,6 +81,7 @@ export const localAttempts = pgTable(
     owner: text("owner").notNull(),
     leaseUntil: timestamp("lease_until", { withTimezone: true }).notNull(),
     status: text("status").notNull().default("running"),
+    stopRequested: boolean("stop_requested").notNull().default(false),
     endReason: text("end_reason"),
     createdAt: createdAt(),
     finishedAt: timestamp("finished_at", { withTimezone: true }),

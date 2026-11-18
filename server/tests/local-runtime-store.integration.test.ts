@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { executeRecordedTool } from "@openbot/toolkit/tool-operation";
 import { inArray } from "drizzle-orm";
 import { createDatabase } from "../src/db/client";
 import { agents, localThreadBindings, users } from "../src/db/schema";
@@ -8,6 +9,7 @@ import {
   LocalExecutionLeaseError,
   LocalRuntimeConflictError,
 } from "../src/local-runtime/store";
+import { localToolOperationRecorder } from "../src/local-runtime/tool-operations";
 import { TEST_POOL, testDatabaseUrl } from "./support/database";
 
 const database = createDatabase(testDatabaseUrl(), TEST_POOL);
@@ -218,6 +220,109 @@ test("one current attempt wins and an expired generation cannot append or start 
       status: "succeeded",
       dispatched: true,
       result: { pageId: "page-1", receipt: "verified" },
+    },
+  ]);
+});
+
+test("stop closes operation admission while a dispatched late result still settles", async () => {
+  const threadId = thread();
+  const { run } = await store.submit(submission(threadId));
+  const token = await store.claimAttempt({
+    threadId,
+    runId: run.id,
+    owner: "worker-stop",
+    leaseMs: 30_000,
+  });
+  const operation = await store.beginOperation(token, {
+    toolCallId: "already-running",
+    toolName: "write_page",
+    parameters: { pageId: "p1", content: "complete" },
+    actorId: ownerId,
+  });
+  await store.markOperationDispatched(token, operation.operation.id);
+  expect(await store.requestStop(token, "acceptance-test")).toBe(true);
+  await expect(
+    store.beginOperation(token, {
+      toolCallId: "must-not-start",
+      toolName: "write_page",
+      parameters: { pageId: "p1" },
+      actorId: ownerId,
+    }),
+  ).rejects.toBeInstanceOf(LocalExecutionLeaseError);
+  expect(
+    await store.settleOperation(token, operation.operation.id, "succeeded", {
+      pageId: "p1",
+      verified: true,
+    }),
+  ).toMatchObject({ status: "succeeded" });
+  await store.finishAttempt(token, "interrupted", {
+    reason: "Stopped after in-flight operation settlement.",
+  });
+  const history = await store.readHistory({ threadId, actorId: ownerId });
+  expect(history.events.map((event) => event.type)).toEqual([
+    "run.queued",
+    "attempt.started",
+    "operation.intent",
+    "operation.dispatched",
+    "attempt.stop_requested",
+    "operation.succeeded",
+    "attempt.interrupted",
+  ]);
+  expect(history.operations).toMatchObject([
+    {
+      toolCallId: "already-running",
+      status: "succeeded",
+      result: { verified: true },
+    },
+  ]);
+});
+
+test("the shared execution adapter writes intent, dispatch, and result to the local timeline", async () => {
+  const threadId = thread();
+  const { run } = await store.submit(submission(threadId));
+  const token = await store.claimAttempt({
+    threadId,
+    runId: run.id,
+    owner: "worker-adapter",
+    leaseMs: 30_000,
+  });
+  let permissionChecks = 0;
+  const recorder = localToolOperationRecorder({
+    store,
+    token,
+    actorId: ownerId,
+    authorize: async () => {
+      permissionChecks += 1;
+    },
+  });
+  const result = await executeRecordedTool({
+    recorder,
+    toolCallId: "adapter-call",
+    toolName: "write_page",
+    parameters: { pageId: "page-1", content: "reviewed" },
+    execute: async (parameters) => ({
+      pageId: parameters.pageId,
+      receipt: "tool-returned",
+    }),
+  });
+  expect(result).toEqual({ pageId: "page-1", receipt: "tool-returned" });
+  expect(permissionChecks).toBe(2);
+  const history = await store.readHistory({ threadId, actorId: ownerId });
+  expect(history.events.map((event) => event.type)).toEqual([
+    "run.queued",
+    "attempt.started",
+    "operation.intent",
+    "operation.dispatched",
+    "operation.succeeded",
+  ]);
+  expect(history.operations).toMatchObject([
+    {
+      toolCallId: "adapter-call",
+      toolName: "write_page",
+      parameters: { pageId: "page-1", content: "reviewed" },
+      status: "succeeded",
+      dispatched: true,
+      result: { value: { pageId: "page-1", receipt: "tool-returned" } },
     },
   ]);
 });

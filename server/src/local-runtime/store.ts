@@ -117,6 +117,7 @@ async function assertExecutionToken(
   transaction: Transaction,
   token: ExecutionToken,
   now: Date,
+  allowStopRequested = false,
 ) {
   const binding = await lockBinding(transaction, token.threadId);
   if (!binding || binding.executionGeneration !== token.generation) {
@@ -133,6 +134,7 @@ async function assertExecutionToken(
         eq(localAttempts.generation, token.generation),
         eq(localAttempts.owner, token.owner),
         eq(localAttempts.status, "running"),
+        ...(allowStopRequested ? [] : [eq(localAttempts.stopRequested, false)]),
         gt(localAttempts.leaseUntil, now),
       ),
     );
@@ -529,6 +531,41 @@ export function createLocalRuntimeStore(
       });
     },
 
+    async requestStop(token: ExecutionToken, reason = "user") {
+      return database.transaction(async (transaction) => {
+        const at = now();
+        const binding = await lockBinding(transaction, token.threadId);
+        if (!binding || binding.executionGeneration !== token.generation) {
+          throw new LocalExecutionLeaseError();
+        }
+        const [attempt] = await transaction
+          .update(localAttempts)
+          .set({ stopRequested: true })
+          .where(
+            and(
+              eq(localAttempts.id, token.attemptId),
+              eq(localAttempts.threadId, token.threadId),
+              eq(localAttempts.runId, token.runId),
+              eq(localAttempts.generation, token.generation),
+              eq(localAttempts.owner, token.owner),
+              eq(localAttempts.status, "running"),
+              eq(localAttempts.stopRequested, false),
+            ),
+          )
+          .returning();
+        if (!attempt) return false;
+        await appendEvent(transaction, {
+          threadId: token.threadId,
+          runId: token.runId,
+          attemptId: token.attemptId,
+          type: "attempt.stop_requested",
+          payload: { reason },
+          createdAt: at,
+        });
+        return true;
+      });
+    },
+
     async settleOperation(
       token: ExecutionToken,
       operationId: string,
@@ -537,7 +574,9 @@ export function createLocalRuntimeStore(
     ) {
       return database.transaction(async (transaction) => {
         const at = now();
-        await assertExecutionToken(transaction, token, at);
+        // A result belongs to the already-dispatched operation. It must settle even after stop
+        // or lease expiry; the exact operation identity prevents it from advancing a new attempt.
+        await lockBinding(transaction, token.threadId);
         const [operation] = await transaction
           .update(localOperations)
           .set({ status: outcome, result, settledAt: at })
@@ -575,7 +614,7 @@ export function createLocalRuntimeStore(
     ) {
       return database.transaction(async (transaction) => {
         const at = now();
-        await assertExecutionToken(transaction, token, at);
+        await assertExecutionToken(transaction, token, at, true);
         await transaction
           .update(localAttempts)
           .set({ status: outcome, endReason: detail?.reason, finishedAt: at })

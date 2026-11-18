@@ -484,6 +484,13 @@
       "when": 1794985948026,
       "tag": "0068_local_runtime",
       "breakpoints": true
+    },
+    {
+      "idx": 69,
+      "version": "7",
+      "when": 1794987743876,
+      "tag": "0069_tool_operation_stop_boundary",
+      "breakpoints": true
     }
   ]
 }
