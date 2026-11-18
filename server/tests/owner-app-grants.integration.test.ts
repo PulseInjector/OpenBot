@@ -26,6 +26,7 @@ import {
   brokeredConnections,
   mcpServers,
   mcpTools,
+  ownerAppGrantRequests,
   pluginGrants,
   sharedUseApprovals,
   teamBotConsents,
@@ -69,6 +70,7 @@ const slug = (name: string) => `${name}_${suite}`;
 const GMAIL = `composio-${slug("gmail")}`;
 const SLACK = `composio-${slug("slack")}`;
 
+const evidence: unknown[] = [];
 const events: AuditEventInput[] = [];
 const audit: AuditStore = {
   insert: async (event) => {
@@ -118,7 +120,11 @@ const teamBots = createTeamBots({ database, connectedServers });
 const sharedUse = createSharedUseStore(database, "composio");
 const sharedGate = createSharedUseGate(sharedUse, audit);
 
-function appAs(actorId: string, role: "admin" | "user" = "user") {
+function appAs(
+  actorId: string,
+  role: "admin" | "user" = "user",
+  routeStore = store,
+) {
   const signedIn: MiddlewareHandler<{ Variables: AppVariables }> = async (
     context,
     next,
@@ -133,7 +139,7 @@ function appAs(actorId: string, role: "admin" | "user" = "user") {
   return new Hono().route(
     "/api/plugins",
     createPluginRoutes(
-      store,
+      routeStore,
       signedIn,
       async () => true,
       undefined,
@@ -259,6 +265,11 @@ beforeEach(async () => {
 });
 
 afterAll(async () => {
+  if (process.env.AOOO_GRANT_EVIDENCE)
+    await Bun.write(
+      process.env.AOOO_GRANT_EVIDENCE,
+      JSON.stringify(evidence, null, 2),
+    );
   await clear();
   await database.delete(users).where(inArray(users.id, people));
 });
@@ -416,7 +427,13 @@ describe("an owner giving their own app to their own Bot", () => {
     expect(await listed()).toEqual([]);
     await connect(owner);
     expect(await listed()).toEqual([
-      { key: GMAIL, displayName: "Gmail", logo: null, account: "personal" },
+      {
+        key: GMAIL,
+        displayName: "Gmail",
+        logo: null,
+        account: "personal",
+        refs: [`${GMAIL}/FETCH`],
+      },
     ]);
   });
 });
@@ -714,4 +731,174 @@ describe("a Shared app whose rule lets Bot owners decide", () => {
     });
     expect(await allowed(bot, owner)).toBe(true);
   });
+});
+
+test("partial owner grants retry only the confirmed missing refs after the directory expands", async () => {
+  const bot = await botOf(owner);
+  await connect(owner);
+  await database.insert(mcpTools).values({
+    serverId: GMAIL,
+    name: "LIST",
+    description: "Read list",
+    inputSchema: {},
+    effect: "read",
+  });
+  const requestId = randomUUID();
+  const refs = [`${GMAIL}/FETCH`, `${GMAIL}/LIST`];
+  const attempts: string[] = [];
+  let fail = true;
+  const routeStore = {
+    ...store,
+    async grant(...args: Parameters<typeof store.grant>) {
+      attempts.push(args[1]);
+      if (fail && args[1] === refs[1]) {
+        fail = false;
+        throw new Error("injected second grant failure");
+      }
+      return store.grant(...args);
+    },
+  };
+  const app = appAs(owner, "user", routeStore);
+  const path = `/api/plugins/for/${bot}/apps/${GMAIL}/give`;
+  expect(
+    (await app.request(path, send("POST", { requestId, refs }))).status,
+  ).toBe(500);
+  const partial = await grantsOn(bot);
+  expect(partial).toEqual([{ ref: refs[0], grantedAs: "owner" }]);
+  // A read appearing after confirmation and a write are both outside this retry.
+  await database.insert(mcpTools).values({
+    serverId: GMAIL,
+    name: "NEW_READ",
+    description: "New read",
+    inputSchema: {},
+    effect: "read",
+  });
+  const retry = await app.request(path, send("POST", { requestId, refs }));
+  expect(retry.status).toBe(200);
+  expect(await retry.json()).toEqual({ granted: [refs[1]] });
+  const complete = await grantsOn(bot);
+  expect(complete.map((row) => row.ref).sort()).toEqual(refs);
+  expect(attempts).toEqual([refs[0], refs[1], refs[1]]);
+  const saved = await database
+    .select()
+    .from(ownerAppGrantRequests)
+    .where(eq(ownerAppGrantRequests.agentId, bot));
+  expect(saved).toHaveLength(1);
+  expect(saved[0]?.refs).toEqual(refs);
+  expect(
+    (
+      await app.request(
+        path,
+        send("POST", { requestId, refs: [...refs, `${GMAIL}/NEW_READ`] }),
+      )
+    ).status,
+  ).toBe(409);
+  expect(
+    (
+      await app.request(
+        path,
+        send("POST", { requestId, refs: [...refs].reverse() }),
+      )
+    ).status,
+  ).toBe(200);
+  expect(attempts).toEqual([refs[0], refs[1], refs[1]]);
+  evidence.push({
+    scenario: "partial-grant-directory-growth",
+    confirmed: ["FETCH", "LIST"],
+    before: [],
+    afterFailure: partial.map((row) => row.ref.split("/").at(-1)),
+    afterRetry: complete.map((row) => row.ref.split("/").at(-1)).sort(),
+    excluded: ["NEW_READ", "SEND"],
+    replayWrites: 1,
+    expandedConfirmationStatus: 409,
+  });
+});
+
+test("a grant committed before its error is re-read rather than granted again", async () => {
+  const bot = await botOf(owner);
+  await connect(owner);
+  const requestId = randomUUID();
+  let writes = 0;
+  const app = appAs(owner, "user", {
+    ...store,
+    async grant(...args: Parameters<typeof store.grant>) {
+      writes++;
+      await store.grant(...args);
+      throw new Error("injected lost grant response");
+    },
+  });
+  const path = `/api/plugins/for/${bot}/apps/${GMAIL}/give`;
+  const body = { requestId, refs: [`${GMAIL}/FETCH`] };
+  expect((await app.request(path, send("POST", body))).status).toBe(500);
+  expect(await grantsOn(bot)).toHaveLength(1);
+  expect((await app.request(path, send("POST", body))).status).toBe(200);
+  expect(writes).toBe(1);
+  expect(await grantsOn(bot)).toHaveLength(1);
+  evidence.push({
+    scenario: "grant-committed-response-lost",
+    grantRows: 1,
+    grantCallsAcrossRetry: writes,
+  });
+});
+
+test("a keyed request without explicit refs retains its first server snapshot on retry", async () => {
+  const bot = await botOf(owner);
+  await connect(owner);
+  const requestId = randomUUID();
+  const path = `/api/plugins/for/${bot}/apps/${GMAIL}/give`;
+  expect(
+    (await appAs(owner).request(path, send("POST", { requestId }))).status,
+  ).toBe(200);
+  await database.insert(mcpTools).values({
+    serverId: GMAIL,
+    name: "NEW_READ",
+    description: "New read",
+    inputSchema: {},
+    effect: "read",
+  });
+  const retry = await appAs(owner).request(path, send("POST", { requestId }));
+  expect(retry.status).toBe(200);
+  expect(await retry.json()).toEqual({ granted: [] });
+  expect((await grantsOn(bot)).map((row) => row.ref)).toEqual([
+    `${GMAIL}/FETCH`,
+  ]);
+});
+
+test("confirmation refs cannot include writes or tools from another app", async () => {
+  const bot = await botOf(owner);
+  await connect(owner);
+  const path = `/api/plugins/for/${bot}/apps/${GMAIL}/give`;
+  for (const ref of [`${GMAIL}/SEND`, "other/FETCH"]) {
+    expect(
+      (
+        await appAs(owner).request(
+          path,
+          send("POST", { requestId: randomUUID(), refs: [ref] }),
+        )
+      ).status,
+    ).toBe(409);
+  }
+  expect(await grantsOn(bot)).toEqual([]);
+});
+
+test("malformed grant confirmations are rejected without granting or saving a snapshot", async () => {
+  const bot = await botOf(owner);
+  await connect(owner);
+  const path = `/api/plugins/for/${bot}/apps/${GMAIL}/give`;
+  for (const body of [
+    "{",
+    JSON.stringify({ requestId: "bad key" }),
+    JSON.stringify({ refs: [1] }),
+  ]) {
+    expect(
+      (await appAs(owner).request(path, { method: "POST", body })).status,
+    ).toBe(400);
+  }
+  expect(await grantsOn(bot)).toEqual([]);
+  expect(
+    await database
+      .select()
+      .from(ownerAppGrantRequests)
+      .where(eq(ownerAppGrantRequests.agentId, bot)),
+  ).toEqual([]);
 });

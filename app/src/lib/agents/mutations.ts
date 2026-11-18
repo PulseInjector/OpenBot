@@ -1,3 +1,4 @@
+import type { BotCreationConfirmation } from "@openbot/shared/bot-creation";
 import { mutationOptions, type QueryClient } from "@tanstack/react-query";
 import { client } from "@/lib/client";
 import {
@@ -18,6 +19,11 @@ export type AgentInput = {
   auth?: { header: string; value: string };
 };
 
+export type CreateAgentRequest = AgentInput & {
+  requestId: string;
+  confirmation?: BotCreationConfirmation;
+};
+
 /** The sentence for every write here, since they all fail the same way to a reader. */
 const FALLBACK = "Couldn't save that change to the Bot.";
 
@@ -28,7 +34,7 @@ function invalidateAgents(queryClient: QueryClient) {
 
 export function createAgentMutationOptions(queryClient: QueryClient) {
   return mutationOptions({
-    mutationFn: (input: AgentInput): Promise<AgentProfile> =>
+    mutationFn: (input: CreateAgentRequest): Promise<AgentProfile> =>
       client("/api/agents", "agent", {
         method: "POST",
         body: input,

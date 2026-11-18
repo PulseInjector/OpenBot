@@ -65,6 +65,25 @@ export const agentProfiles = pgTable(
   ],
 );
 
+/** A create confirmation is replayable even when its HTTP response is lost. */
+export const agentCreationRequests = pgTable(
+  "agent_creation_requests",
+  {
+    actorId: text("actor_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    requestId: text("request_id").notNull(),
+    requestHash: text("request_hash").notNull(),
+    // Keep the consumed key if an administrator permanently deletes the Bot.
+    agentId: text("agent_id").notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.actorId, table.requestId] }),
+    index("agent_creation_requests_agent_idx").on(table.agentId),
+  ],
+);
+
 export const agentPreferences = pgTable(
   "agent_preferences",
   {

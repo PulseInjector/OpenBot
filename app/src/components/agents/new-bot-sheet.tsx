@@ -36,7 +36,10 @@ import {
   agentFormSchema,
   agentInputFrom,
 } from "@/lib/agents/form";
-import { createAgentMutationOptions } from "@/lib/agents/mutations";
+import {
+  type CreateAgentRequest,
+  createAgentMutationOptions,
+} from "@/lib/agents/mutations";
 import {
   agentCapabilitiesQueryOptions,
   testAgentConnection,
@@ -148,6 +151,14 @@ function defaultInstructions(name: string, runtime: Runtime): string {
  */
 function NewBotFlow({ onCreated }: { onCreated: (agentId: string) => void }) {
   const createAgent = useMutation(createAgentMutationOptions(queryClient));
+  const [requestId] = useState(() => crypto.randomUUID());
+  const confirmation = useRef<{
+    input: CreateAgentRequest;
+    apps: GiveableApp[];
+  } | null>(null);
+  const saving = useRef(false);
+  const [granting, setGranting] = useState(false);
+  const [grantFailure, setGrantFailure] = useState<string>();
   /*
    * Assumed available while the answer loads, so the common deployment never sees the option flash
    * from disabled to enabled; the server refuses the create either way.
@@ -212,7 +223,7 @@ function NewBotFlow({ onCreated }: { onCreated: (agentId: string) => void }) {
       ? "Enter your agent's address."
       : agentFormSchema.shape.endpoint.safeParse(endpoint).error?.issues[0]
           ?.message;
-  const busy = checking || createAgent.isPending;
+  const busy = checking || createAgent.isPending || granting;
   const canContinue =
     !busy &&
     (step === "about"
@@ -230,31 +241,60 @@ function NewBotFlow({ onCreated }: { onCreated: (agentId: string) => void }) {
   };
 
   const create = async (chosen: Runtime) => {
+    if (saving.current) return;
+    saving.current = true;
+    setGranting(true);
+    setGrantFailure(undefined);
     const managed = chosen.kind === "managed";
-    const agent = await createAgent.mutateAsync(
-      agentInputFrom({
-        name: name.trim(),
-        title: title.trim() || defaultTitle(chosen),
-        roleDescription:
-          instructions.trim() || defaultInstructions(name.trim(), chosen),
-        visibility,
-        // A Bot that runs here has no address; whatever was typed on the way past stays behind.
-        endpoint: managed ? endpoint.trim() : "",
-        authValue: managed ? key : "",
-      }),
-    );
-    /*
-     * The ticked apps, given once the Bot exists. A refusal is not a failed create: the Bot is made,
-     * and its page lists every app it could be given with a switch each. So each is tried, none
-     * holds up the others, and none stops the hand-over.
-     */
-    await Promise.allSettled(
-      giveable
+    confirmation.current ??= {
+      input: {
+        ...agentInputFrom({
+          name: name.trim(),
+          title: title.trim() || defaultTitle(chosen),
+          roleDescription:
+            instructions.trim() || defaultInstructions(name.trim(), chosen),
+          visibility,
+          endpoint: managed ? endpoint.trim() : "",
+          authValue: managed ? key : "",
+        }),
+        requestId,
+        confirmation: {
+          skills: [],
+          apps: giveable
+            .filter((app) => !leftOut.has(app.key))
+            .map((app) => ({ app: app.key, refs: app.refs ?? [] })),
+        },
+      },
+      apps: giveable
         .filter((app) => !leftOut.has(app.key))
-        .map((app) => giveBotApp({ agentId: agent.id, app: app.key })),
-    );
-    void queryClient.invalidateQueries({ queryKey: pluginKeys.all });
-    setCreatedId(agent.id);
+        .map((app) => ({ ...app, refs: app.refs?.slice() })),
+    };
+    const confirmed = confirmation.current;
+    try {
+      const agent = await createAgent.mutateAsync(confirmed.input);
+      const results = await Promise.allSettled(
+        confirmed.apps.map((app) =>
+          giveBotApp({
+            agentId: agent.id,
+            app: app.key,
+            requestId,
+            refs: app.refs,
+          }),
+        ),
+      );
+      void queryClient.invalidateQueries({ queryKey: pluginKeys.all });
+      const failed = confirmed.apps.filter(
+        (_, index) => results[index]?.status === "rejected",
+      );
+      if (failed.length) {
+        setGrantFailure(
+          `${agent.name ?? confirmed.input.name} was created. Couldn't finish access to ${failed.map((app) => app.displayName).join(", ")}. Retry to finish the confirmed access.`,
+        );
+      } else setCreatedId(agent.id);
+    } finally {
+      saving.current = false;
+      setGranting(false);
+    }
   };
 
   const advance = () => {
@@ -342,70 +382,80 @@ function NewBotFlow({ onCreated }: { onCreated: (agentId: string) => void }) {
       }}
     >
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-6 pt-8 pb-6">
-        <MotionConfig reducedMotion="user">
-          {/* Shares its layout id with the orb on the created view, so it travels there. */}
-          <motion.div className="w-fit" layoutId={ORB_LAYOUT_ID}>
-            <AgentOrb
-              size="40px"
-              state={busy ? "thinking" : named ? "listening" : "idle"}
-            />
-          </motion.div>
+        <fieldset
+          disabled={Boolean(confirmation.current) || busy}
+          className="contents"
+        >
+          <MotionConfig reducedMotion="user">
+            {/* Shares its layout id with the orb on the created view, so it travels there. */}
+            <motion.div className="w-fit" layoutId={ORB_LAYOUT_ID}>
+              <AgentOrb
+                size="40px"
+                state={busy ? "thinking" : named ? "listening" : "idle"}
+              />
+            </motion.div>
 
-          <motion.div
-            animate={{ opacity: 1, x: 0 }}
-            className="mt-6"
-            initial={{ opacity: 0, x: 24 * direction }}
-            key={step}
-            transition={{ duration: 0.2, ease: "easeOut" }}
-          >
-            {step === "about" ? (
-              <AboutStep
-                apps={giveable}
-                instructions={instructions}
-                leftOut={leftOut}
-                name={name}
-                onApp={(app, used) =>
-                  setLeftOut((current) => {
-                    const next = new Set(current);
-                    if (used) next.delete(app);
-                    else next.add(app);
-                    return next;
-                  })
-                }
-                runtime={runtime ?? { kind: "builtin" }}
-                onInstructions={setInstructions}
-                onName={setName}
-                onTitle={setTitle}
-                onVisibility={setVisibility}
-                title={title}
-                visibility={visibility}
-              />
-            ) : step === "runtime" ? (
-              <RuntimeStep
-                builtInAvailable={builtInAvailable}
-                onChoose={setRuntime}
-                runtime={runtime}
-              />
-            ) : (
-              <EndpointStep
-                endpoint={endpoint}
-                endpointError={tried ? endpointIssue : unreachable}
-                harness={runtime?.kind === "managed" ? runtime.harness : null}
-                onEndpoint={(value) => {
-                  setEndpoint(value);
-                  setTried(false);
-                  setUnreachable(undefined);
-                }}
-                onKey={(value) => {
-                  setKey(value);
-                  setUnreachable(undefined);
-                }}
-                secret={key}
-              />
-            )}
-          </motion.div>
-        </MotionConfig>
+            <motion.div
+              animate={{ opacity: 1, x: 0 }}
+              className="mt-6"
+              initial={{ opacity: 0, x: 24 * direction }}
+              key={step}
+              transition={{ duration: 0.2, ease: "easeOut" }}
+            >
+              {step === "about" ? (
+                <AboutStep
+                  apps={giveable}
+                  instructions={instructions}
+                  leftOut={leftOut}
+                  name={name}
+                  onApp={(app, used) =>
+                    setLeftOut((current) => {
+                      const next = new Set(current);
+                      if (used) next.delete(app);
+                      else next.add(app);
+                      return next;
+                    })
+                  }
+                  runtime={runtime ?? { kind: "builtin" }}
+                  onInstructions={setInstructions}
+                  onName={setName}
+                  onTitle={setTitle}
+                  onVisibility={setVisibility}
+                  title={title}
+                  visibility={visibility}
+                />
+              ) : step === "runtime" ? (
+                <RuntimeStep
+                  builtInAvailable={builtInAvailable}
+                  onChoose={setRuntime}
+                  runtime={runtime}
+                />
+              ) : (
+                <EndpointStep
+                  endpoint={endpoint}
+                  endpointError={tried ? endpointIssue : unreachable}
+                  harness={runtime?.kind === "managed" ? runtime.harness : null}
+                  onEndpoint={(value) => {
+                    setEndpoint(value);
+                    setTried(false);
+                    setUnreachable(undefined);
+                  }}
+                  onKey={(value) => {
+                    setKey(value);
+                    setUnreachable(undefined);
+                  }}
+                  secret={key}
+                />
+              )}
+            </motion.div>
+          </MotionConfig>
+        </fieldset>
 
+        {grantFailure ? (
+          <p className="mt-6 text-destructive text-sm" role="alert">
+            {grantFailure}
+          </p>
+        ) : null}
         {createAgent.error ? (
           <p className="mt-6 text-destructive text-sm" role="alert">
             {createAgent.error.message}
@@ -423,7 +473,7 @@ function NewBotFlow({ onCreated }: { onCreated: (agentId: string) => void }) {
         ) : (
           <Button
             className="px-4"
-            disabled={busy}
+            disabled={busy || Boolean(confirmation.current)}
             onClick={() => go(previous())}
             size="lg"
             type="button"
@@ -440,11 +490,13 @@ function NewBotFlow({ onCreated }: { onCreated: (agentId: string) => void }) {
         >
           {checking
             ? "Checking…"
-            : createAgent.isPending
+            : createAgent.isPending || granting
               ? "Creating…"
-              : step === "about"
-                ? "Create"
-                : "Continue"}
+              : grantFailure || createAgent.error
+                ? "Retry"
+                : step === "about"
+                  ? "Create"
+                  : "Continue"}
         </Button>
       </SheetFooter>
     </form>

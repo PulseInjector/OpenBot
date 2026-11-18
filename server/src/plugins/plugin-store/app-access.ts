@@ -20,6 +20,7 @@ import {
   mcpServers,
   mcpTools,
   mcpUserCredentials,
+  ownerAppGrantRequests,
   pluginGrants,
   teamBotConsentDefaults,
   teamBotConsents,
@@ -100,7 +101,7 @@ type ServerRow = {
 export type GiveableApp = Pick<
   AppAccess,
   "key" | "displayName" | "logo" | "account"
->;
+> & { refs: string[] };
 
 /** The directory, asked only to name an app this deployment has no row for. */
 export type AppDirectory = () => Promise<BrokerApp[]>;
@@ -900,6 +901,57 @@ export function appAccessMethods(context: StoreContext) {
   }
 
   return {
+    async ownerGrantSnapshot(input: {
+      actorId: string;
+      agentId: string;
+      appKey: string;
+      requestId: string;
+      refs: string[];
+      confirmedRefs?: string[];
+    }): Promise<string[] | null> {
+      const { confirmedRefs, ...record } = input;
+      await database
+        .insert(ownerAppGrantRequests)
+        .values(record)
+        .onConflictDoNothing();
+      const [saved] = await database
+        .select({ refs: ownerAppGrantRequests.refs })
+        .from(ownerAppGrantRequests)
+        .where(
+          and(
+            eq(ownerAppGrantRequests.actorId, input.actorId),
+            eq(ownerAppGrantRequests.agentId, input.agentId),
+            eq(ownerAppGrantRequests.appKey, input.appKey),
+            eq(ownerAppGrantRequests.requestId, input.requestId),
+          ),
+        )
+        .limit(1);
+      if (!saved)
+        throw new Error("Could not read the saved app grant confirmation.");
+      if (
+        confirmedRefs &&
+        JSON.stringify(saved.refs) !== JSON.stringify(confirmedRefs)
+      )
+        return null;
+      return saved.refs;
+    },
+
+    async ownerGrantedRefs(agentId: string, refs: string[]): Promise<string[]> {
+      if (refs.length === 0) return [];
+      return (
+        await database
+          .select({ ref: pluginGrants.ref })
+          .from(pluginGrants)
+          .where(
+            and(
+              eq(pluginGrants.kind, "mcp"),
+              eq(pluginGrants.agentId, agentId),
+              inArray(pluginGrants.ref, refs),
+            ),
+          )
+      ).map((row) => row.ref);
+    },
+
     /**
      * Every work app one Bot holds, each with what it is for this person.
      *
@@ -1020,6 +1072,20 @@ export function appAccessMethods(context: StoreContext) {
           displayName: app.title,
           logo: app.logo,
           account,
+          refs: (
+            await database
+              .select({ name: mcpTools.name, effect: mcpTools.effect })
+              .from(mcpTools)
+              .where(eq(mcpTools.serverId, app.answeringId ?? ""))
+          )
+            .filter(
+              (tool) =>
+                app.entry?.auth.kind === "builtin" ||
+                classifyTool(app.entry, tool.name, true, tool.effect) ===
+                  "read",
+            )
+            .map((tool) => `${app.answeringId}/${tool.name}`)
+            .sort(),
         });
       }
       return giveable.sort((left, right) =>

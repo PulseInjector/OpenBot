@@ -176,6 +176,28 @@ export const mcpServers = pgTable(
   ],
 );
 
+/** The exact app tools an owner confirmed for one Bot-create request. */
+export const ownerAppGrantRequests = pgTable(
+  "owner_app_grant_requests",
+  {
+    actorId: text("actor_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    appKey: text("app_key").notNull(),
+    requestId: text("request_id").notNull(),
+    refs: text("refs").array().notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.actorId, table.agentId, table.appKey, table.requestId],
+    }),
+  ],
+);
+
 /**
  * A tool one server says it offers, as of the last listing.
  *

@@ -31,6 +31,7 @@ const validInput: CreateAgentInput = {
     "Review receipts, categorize expenses, and prepare reimbursement reports.",
   visibility: "private",
 };
+const requestId = "5d2deef2-8a11-48ec-b171-149e4fb329be";
 
 function profile(overrides: Partial<AgentProfile> = {}): AgentProfile {
   return {
@@ -68,8 +69,8 @@ function fakeStore(
       calls.push(["getWithin", receivedActor, id]);
       return profile({ id });
     },
-    async create(receivedActor, input) {
-      calls.push(["create", receivedActor, input]);
+    async create(receivedActor, input, key) {
+      calls.push(["create", receivedActor, input, key]);
       return profile({ ...input });
     },
     async update(receivedActor, id, input) {
@@ -266,6 +267,22 @@ describe("agent lifecycle routes", () => {
     ]);
   });
 
+  test("rejects invalid creation request IDs and confirmations before writing", async () => {
+    const store = fakeStore();
+    for (const extra of [
+      { requestId: "bad key" },
+      { requestId: "" },
+      { confirmation: { skills: [1], apps: [] } },
+    ]) {
+      const response = await appFor(store).request("http://openbot.test/", {
+        method: "POST",
+        body: JSON.stringify({ ...validInput, ...extra }),
+      });
+      expect(response.status).toBe(400);
+    }
+    expect(store.calls).toEqual([]);
+  });
+
   test("serves every lifecycle route with its contract status and store operation", async () => {
     const store = fakeStore();
     const app = appFor(store);
@@ -275,7 +292,7 @@ describe("agent lifecycle routes", () => {
     const created = await app.request("http://openbot.test/", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(validInput),
+      body: JSON.stringify({ ...validInput, requestId }),
     });
     const updated = await app.request("http://openbot.test/agent-1", {
       method: "PATCH",
@@ -330,6 +347,7 @@ describe("agent lifecycle routes", () => {
         "create",
         actor,
         { ...validInput, systemPrompt: validInput.roleDescription },
+        requestId,
       ],
       ["update", actor, "agent-1", validInput],
       ["duplicate", actor, "agent-1"],
@@ -458,6 +476,7 @@ describe("agent lifecycle routes", () => {
       systemOwned: true,
       // A real field now, not a forged one; the rest of this list still is.
       endpoint: "https://agents.example.com/ag-ui",
+      requestId,
     };
 
     for (const [path, method] of [
@@ -478,7 +497,7 @@ describe("agent lifecycle routes", () => {
       endpoint: "https://agents.example.com/ag-ui",
     };
     expect(store.calls).toEqual([
-      ["create", actor, expected],
+      ["create", actor, expected, requestId],
       ["update", actor, "agent-1", expected],
     ]);
   });
