@@ -1,14 +1,14 @@
 {
   "checkedOn": "2026-11-18",
   "branch": "feat/local-bot-workbench",
-  "implementationCommit": "a0156d7b",
+  "implementationCommits": ["a0156d7b", "7f5b1758"],
   "database": "isolated local PostgreSQL 17.9, port 56432, database openbot_test",
   "checks": {
     "migrationApplied": true,
     "schemaGenerationClean": true,
     "targetedTests": {
       "passed": 42,
-      "assertions": 158
+      "assertions": 160
     },
     "workspaceTypecheck": true,
     "testTypecheckCleanAgainstBaseline": true,

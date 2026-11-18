@@ -1,7 +1,7 @@
 # Unit 4: Tool operation records and stop boundary
 
 Checked on 2026-11-18 on `feat/local-bot-workbench`, after unit 3 at `837209c6`.
-The implementation commit is recorded in `unit-4-evidence.json` after the code commit.
+The implementation commits are recorded in `unit-4-evidence.json` after the code commits.
 
 ## Environment and scope
 
@@ -16,6 +16,8 @@ The implementation commit is recorded in `unit-4-evidence.json` after the code c
 - The current server runtime does not yet supply this recorder by default. The local-runner call site
   is part of work unit 5; this unit verifies the shared execution boundary and its real PostgreSQL
   adapter independently. No claim is made that existing live runs now persist into local history.
+- Calling the recorder's `stop()` persists the stop gate first, rejects further operations, and
+  waits for already-dispatched calls to persist a result or `unknown` before returning.
 
 ## Observed results
 
@@ -40,8 +42,8 @@ the adapter returns it.
 | --- | --- |
 | `DATABASE_URL=... bun run --cwd server db:migrate` | Passed on the isolated PostgreSQL database. |
 | `DATABASE_URL=... bun run --cwd server db:generate --name verify_unit4` | Passed; no schema changes after generating migration 0069. |
-| `TEST_DATABASE_URL=... bun test server/tests/local-runtime-store.integration.test.ts` | 5 passed, 33 assertions. |
-| `TEST_DATABASE_URL=... bun test toolkit/tests/tool-operation.test.ts server/tests/headless-tools.test.ts server/tests/local-runtime-store.integration.test.ts server/tests/schema.test.ts server/tests/migration-journal.test.ts` | 42 passed, 158 assertions. |
+| `TEST_DATABASE_URL=... bun test server/tests/local-runtime-store.integration.test.ts` | 5 passed, 35 assertions. |
+| `TEST_DATABASE_URL=... bun test toolkit/tests/tool-operation.test.ts server/tests/headless-tools.test.ts server/tests/local-runtime-store.integration.test.ts server/tests/schema.test.ts server/tests/migration-journal.test.ts` | 42 passed, 160 assertions. |
 | `bun run typecheck` | Passed for shared, toolkit, worker, server, and app. |
 | `TEST_DATABASE_URL=... bun run typecheck:tests` | Clean against baseline (240 known errors). |
 | `bunx biome check` on changed TypeScript/schema/config files | Passed. |
