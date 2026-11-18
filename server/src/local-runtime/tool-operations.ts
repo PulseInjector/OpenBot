@@ -3,7 +3,10 @@ import type { createLocalRuntimeStore, ExecutionToken } from "./store";
 
 type OperationStore = Pick<
   ReturnType<typeof createLocalRuntimeStore>,
-  "beginOperation" | "markOperationDispatched" | "settleOperation"
+  | "beginOperation"
+  | "markOperationDispatched"
+  | "settleOperation"
+  | "requestStop"
 >;
 
 /** Binds the shared tool boundary to one trusted actor and current attempt. */
@@ -18,6 +21,7 @@ export function localToolOperationRecorder(input: {
   }) => Promise<void>;
 }): ToolOperationRecorder {
   const operationIds = new Set<string>();
+  const inFlight = new Map<string, Promise<void>>();
   return {
     authorize: input.authorize,
     async begin(intent) {
@@ -32,6 +36,23 @@ export function localToolOperationRecorder(input: {
       if (!operationIds.has(operationId))
         throw new Error("Unknown operation id.");
       await input.store.markOperationDispatched(input.token, operationId);
+    },
+    track(operationId) {
+      if (!operationIds.has(operationId))
+        throw new Error("Unknown operation id.");
+      let release!: () => void;
+      const settled = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      inFlight.set(operationId, settled);
+      return () => {
+        inFlight.delete(operationId);
+        release();
+      };
+    },
+    async stop(reason = "user") {
+      await input.store.requestStop(input.token, reason);
+      await Promise.all([...inFlight.values()]);
     },
     async settle(operationId, outcome, result) {
       if (!operationIds.has(operationId))

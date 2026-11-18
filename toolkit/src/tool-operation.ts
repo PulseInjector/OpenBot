@@ -13,6 +13,8 @@ export type ToolOperationRecorder = {
     outcome: "succeeded" | "failed" | "unknown",
     result: Record<string, unknown>,
   ): Promise<void>;
+  track?(operationId: string): () => void;
+  stop?(reason?: string): Promise<void>;
 };
 
 function completeObject(value: unknown): Record<string, unknown> {
@@ -48,6 +50,7 @@ export async function executeRecordedTool<T>(input: {
   const operationId = await input.recorder.begin(intent);
   await input.recorder.authorize(intent);
   await input.recorder.dispatch(operationId);
+  const release = input.recorder.track?.(operationId);
   const timeoutMs = input.settlementTimeoutMs ?? 30_000;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const execution = Promise.resolve().then(() => input.execute(parameters));
@@ -115,5 +118,7 @@ export async function executeRecordedTool<T>(input: {
       );
     }
     throw error;
+  } finally {
+    release?.();
   }
 }

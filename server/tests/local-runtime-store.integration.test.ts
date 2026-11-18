@@ -233,28 +233,51 @@ test("stop closes operation admission while a dispatched late result still settl
     owner: "worker-stop",
     leaseMs: 30_000,
   });
-  const operation = await store.beginOperation(token, {
+  const recorder = localToolOperationRecorder({
+    store,
+    token,
+    actorId: ownerId,
+    authorize: async () => undefined,
+  });
+  let complete:
+    | ((value: { pageId: string; verified: boolean }) => void)
+    | undefined;
+  let start: (() => void) | undefined;
+  const started = new Promise<void>((resolve) => {
+    start = resolve;
+  });
+  const inFlight = executeRecordedTool({
+    recorder,
     toolCallId: "already-running",
     toolName: "write_page",
     parameters: { pageId: "p1", content: "complete" },
-    actorId: ownerId,
+    execute: () =>
+      new Promise((resolve) => {
+        complete = resolve;
+        start?.();
+      }),
   });
-  await store.markOperationDispatched(token, operation.operation.id);
-  expect(await store.requestStop(token, "acceptance-test")).toBe(true);
+  await started;
+  let stopSettled = false;
+  const stopping = recorder.stop?.("acceptance-test").then(() => {
+    stopSettled = true;
+  });
+  expect(stopping).toBeDefined();
   await expect(
-    store.beginOperation(token, {
+    executeRecordedTool({
+      recorder,
       toolCallId: "must-not-start",
       toolName: "write_page",
       parameters: { pageId: "p1" },
-      actorId: ownerId,
+      execute: async () => ({ pageId: "p1", verified: false }),
     }),
   ).rejects.toBeInstanceOf(LocalExecutionLeaseError);
-  expect(
-    await store.settleOperation(token, operation.operation.id, "succeeded", {
-      pageId: "p1",
-      verified: true,
-    }),
-  ).toMatchObject({ status: "succeeded" });
+  await Promise.resolve();
+  expect(stopSettled).toBe(false);
+  complete?.({ pageId: "p1", verified: true });
+  await expect(inFlight).resolves.toEqual({ pageId: "p1", verified: true });
+  await stopping;
+  expect(stopSettled).toBe(true);
   await store.finishAttempt(token, "interrupted", {
     reason: "Stopped after in-flight operation settlement.",
   });
@@ -272,7 +295,7 @@ test("stop closes operation admission while a dispatched late result still settl
     {
       toolCallId: "already-running",
       status: "succeeded",
-      result: { verified: true },
+      result: { value: { pageId: "p1", verified: true } },
     },
   ]);
 });
