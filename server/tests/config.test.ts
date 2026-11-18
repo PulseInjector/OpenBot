@@ -82,6 +82,23 @@ describe("deployment configuration", () => {
     expect(config.tenantPackageDirectory).toBe("../examples/fintech");
   });
 
+  test("selects local durable runtime without any Intelligence credentials", () => {
+    const config = loadConfig({
+      DATABASE_URL: baseEnvironment.DATABASE_URL,
+      KEY_ENCRYPTION_KEY: baseEnvironment.KEY_ENCRYPTION_KEY,
+      OPENBOT_SINGLE_USER: "true",
+      OPENBOT_RUNTIME_MODE: "local",
+    });
+
+    expect(config.runtime).toEqual({ mode: "local", durableHistory: true });
+  });
+
+  test("rejects an unknown runtime mode", () => {
+    expect(() =>
+      loadConfig({ ...baseEnvironment, OPENBOT_RUNTIME_MODE: "memory" }),
+    ).toThrow('OPENBOT_RUNTIME_MODE must be "local" or "intelligence"');
+  });
+
   test("allows deployment without an authentication provider, when asked to", () => {
     const config = loadConfig({
       DATABASE_URL: baseEnvironment.DATABASE_URL,

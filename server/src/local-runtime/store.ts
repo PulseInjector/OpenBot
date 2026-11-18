@@ -566,6 +566,135 @@ export function createLocalRuntimeStore(
       });
     },
 
+    async requestStopForActor(input: {
+      threadId: string;
+      actorId: string;
+      agentId: string;
+      runId?: string;
+      reason?: string;
+    }) {
+      return database.transaction(async (transaction) => {
+        const at = now();
+        const binding = await lockBinding(transaction, input.threadId);
+        if (
+          !binding ||
+          binding.ownerUserId !== input.actorId ||
+          binding.agentId !== input.agentId
+        ) {
+          throw new LocalRuntimeConflictError("Local thread was not found.");
+        }
+        const [active] = await transaction
+          .select()
+          .from(localAttempts)
+          .where(
+            and(
+              eq(localAttempts.threadId, input.threadId),
+              eq(localAttempts.status, "running"),
+              gt(localAttempts.leaseUntil, at),
+              input.runId ? eq(localAttempts.runId, input.runId) : undefined,
+            ),
+          )
+          .limit(1);
+        if (!active) return false;
+        const [attempt] = await transaction
+          .update(localAttempts)
+          .set({ stopRequested: true })
+          .where(
+            and(
+              eq(localAttempts.id, active.id),
+              eq(localAttempts.status, "running"),
+              eq(localAttempts.stopRequested, false),
+            ),
+          )
+          .returning();
+        if (!attempt) return false;
+        await appendEvent(transaction, {
+          threadId: input.threadId,
+          runId: active.runId,
+          attemptId: active.id,
+          type: "attempt.stop_requested",
+          payload: { reason: input.reason ?? "user" },
+          createdAt: at,
+        });
+        return true;
+      });
+    },
+
+    async stopRequested(token: ExecutionToken) {
+      const [attempt] = await database
+        .select({ stopRequested: localAttempts.stopRequested })
+        .from(localAttempts)
+        .where(
+          and(
+            eq(localAttempts.id, token.attemptId),
+            eq(localAttempts.threadId, token.threadId),
+            eq(localAttempts.runId, token.runId),
+            eq(localAttempts.generation, token.generation),
+            eq(localAttempts.owner, token.owner),
+            eq(localAttempts.status, "running"),
+          ),
+        );
+      return attempt?.stopRequested ?? true;
+    },
+
+    async readRun(input: {
+      threadId: string;
+      actorId: string;
+      agentId: string;
+      runId: string;
+    }) {
+      const [row] = await database
+        .select({ run: localRuns })
+        .from(localRuns)
+        .innerJoin(
+          localThreadBindings,
+          eq(localThreadBindings.threadId, localRuns.threadId),
+        )
+        .where(
+          and(
+            eq(localRuns.id, input.runId),
+            eq(localRuns.threadId, input.threadId),
+            eq(localThreadBindings.ownerUserId, input.actorId),
+            eq(localThreadBindings.agentId, input.agentId),
+          ),
+        );
+      return row?.run;
+    },
+
+    async readEventsAfter(input: {
+      threadId: string;
+      actorId: string;
+      agentId: string;
+      afterSequence: number;
+      limit?: number;
+      runId?: string;
+    }) {
+      const [binding] = await database
+        .select({ threadId: localThreadBindings.threadId })
+        .from(localThreadBindings)
+        .where(
+          and(
+            eq(localThreadBindings.threadId, input.threadId),
+            eq(localThreadBindings.ownerUserId, input.actorId),
+            eq(localThreadBindings.agentId, input.agentId),
+          ),
+        );
+      if (!binding)
+        throw new LocalRuntimeConflictError("Local thread was not found.");
+      return database
+        .select()
+        .from(localEvents)
+        .where(
+          and(
+            eq(localEvents.threadId, input.threadId),
+            gt(localEvents.sequence, input.afterSequence),
+            input.runId ? eq(localEvents.runId, input.runId) : undefined,
+          ),
+        )
+        .orderBy(asc(localEvents.sequence))
+        .limit(input.limit ?? 100);
+    },
+
     async settleOperation(
       token: ExecutionToken,
       operationId: string,
@@ -628,6 +757,11 @@ export function createLocalRuntimeStore(
               error: outcome === "failed" ? detail?.reason : null,
               finishedAt: at,
             })
+            .where(eq(localRuns.id, token.runId));
+        } else {
+          await transaction
+            .update(localRuns)
+            .set({ status: "cancelled", finishedAt: at })
             .where(eq(localRuns.id, token.runId));
         }
         return appendEvent(transaction, {

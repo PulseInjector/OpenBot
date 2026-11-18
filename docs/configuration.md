@@ -20,13 +20,19 @@ bash scripts/start.sh
 | ----------------------------- | ----------------------------------------------------------------------------------------------------- |
 | `DATABASE_URL`                | PostgreSQL connection string.                                                                         |
 | `KEY_ENCRYPTION_KEY`          | Base64-encoded 32-byte key for encrypted stored credentials. Generate with `openssl rand -base64 32`. |
+| `OPENBOT_RUNTIME_MODE`        | `intelligence` (default) or `local`. Local mode stores threads, run attempts and event history in PostgreSQL and does not require Intelligence credentials. |
 | `INTELLIGENCE_API_URL`        | CopilotKit Intelligence API URL.                                                                      |
 | `INTELLIGENCE_GATEWAY_WS_URL` | CopilotKit Intelligence realtime gateway URL.                                                         |
 | `INTELLIGENCE_API_KEY`        | Runtime key for the Intelligence project.                                                             |
 
-All five above stop server startup if missing. The three `INTELLIGENCE_` values are additionally
-checked as a set, so a partial set is refused as a misconfiguration rather than treated as
-unconfigured.
+`DATABASE_URL` and `KEY_ENCRYPTION_KEY` always stop startup if missing. The three `INTELLIGENCE_`
+values are required as a set in the default `intelligence` mode; they may all be unset when
+`OPENBOT_RUNTIME_MODE=local`. A partial Intelligence configuration is ignored in local mode.
+
+Local mode uses the same configured Agent implementations and model credentials. Its per-thread
+execution lease and ordered event history are stored in PostgreSQL. Thread history is available at
+`GET /api/local-runtime/threads/:threadId/history`; event pages accept `after` and `limit` query
+parameters. Both routes require a signed-in user, current Bot access, and ownership of the thread.
 
 `COPILOTKIT_LICENSE_TOKEN` is optional: managed Intelligence issues no licence token, and a
 self-hosted Intelligence that has one sets this and has it forwarded to the runtime. That

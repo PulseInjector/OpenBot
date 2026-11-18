@@ -120,6 +120,22 @@ test("event order, message projection, and history survive a fresh store instanc
   ]);
   expect(history.runs[0]?.id).toBe(run.id);
   expect(history.attempts[0]?.generation).toBe(token.generation);
+  const resumed = await restartedStore.readEventsAfter({
+    threadId,
+    actorId: ownerId,
+    agentId,
+    afterSequence: first.sequence,
+    limit: 1,
+  });
+  expect(resumed.map((event) => event.sequence)).toEqual([second.sequence]);
+  await expect(
+    restartedStore.readEventsAfter({
+      threadId,
+      actorId: `${ownerId}-other`,
+      agentId,
+      afterSequence: 0,
+    }),
+  ).rejects.toBeInstanceOf(LocalRuntimeConflictError);
 });
 
 test("one current attempt wins and an expired generation cannot append or start an operation", async () => {
@@ -298,6 +314,52 @@ test("stop closes operation admission while a dispatched late result still settl
       result: { value: { pageId: "p1", verified: true } },
     },
   ]);
+});
+
+test("an old run stop cannot mark the next attempt for the same thread", async () => {
+  const threadId = thread();
+  const first = await store.submit(submission(threadId, "request-old", "old"));
+  const oldAttempt = await store.claimAttempt({
+    threadId,
+    runId: first.run.id,
+    owner: "worker-old",
+    leaseMs: 30_000,
+  });
+  await store.finishAttempt(oldAttempt, "succeeded");
+
+  const second = await store.submit(submission(threadId, "request-new", "new"));
+  const currentAttempt = await store.claimAttempt({
+    threadId,
+    runId: second.run.id,
+    owner: "worker-new",
+    leaseMs: 30_000,
+  });
+  await expect(
+    store.requestStopForActor({
+      threadId,
+      actorId: ownerId,
+      agentId,
+      runId: first.run.id,
+    }),
+  ).resolves.toBe(false);
+  await expect(store.stopRequested(currentAttempt)).resolves.toBe(false);
+  await expect(
+    store.requestStopForActor({
+      threadId,
+      actorId: ownerId,
+      agentId,
+      runId: second.run.id,
+    }),
+  ).resolves.toBe(true);
+  await expect(store.stopRequested(currentAttempt)).resolves.toBe(true);
+  await expect(
+    store.requestStopForActor({
+      threadId,
+      actorId: `${ownerId}-other`,
+      agentId,
+      runId: second.run.id,
+    }),
+  ).rejects.toBeInstanceOf(LocalRuntimeConflictError);
 });
 
 test("the shared execution adapter writes intent, dispatch, and result to the local timeline", async () => {

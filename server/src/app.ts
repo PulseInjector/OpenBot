@@ -54,6 +54,9 @@ import { type ChannelStore, createChannelRoutes } from "./channels/routes";
 import type { ThreadIdentity } from "./channels/thread-identity";
 import { createThreadRoutes } from "./channels/thread-routes";
 import { createThreadReader } from "./channels/thread-status";
+import { withLocalActorContext } from "./local-runtime/actor-context";
+import { createLocalRuntimeRoutes } from "./local-runtime/routes";
+import type { createLocalRuntimeStore } from "./local-runtime/store";
 import { createComponentRoutes } from "./components/routes";
 import type { SandboxedStore } from "./components/sandboxed";
 import { createSandboxedRoutes } from "./components/sandboxed-routes";
@@ -448,6 +451,8 @@ export function createApp(
   identity?: IdentityStore,
   /** The GitHub sign-in callback, built by the caller; mounted behind requireUser ahead of /api/identity. */
   identityGithubCallback?: Hono<{ Variables: AppVariables }>,
+  /** Durable local event store, when local mode is selected. */
+  localRuntimeStore?: ReturnType<typeof createLocalRuntimeStore>,
 ) {
   const app = new Hono<{ Variables: AppVariables }>();
   mountDesktopConnectionFailure(app, desktopHostToken);
@@ -627,6 +632,29 @@ export function createApp(
     : auth && roleRepository
       ? createRequireUser(auth, roleRepository)
       : authenticationUnavailable;
+  if (config.runtime.mode === "local") {
+    app.use("/api/copilotkit/agent/*", requireUser);
+    app.use("/api/copilotkit/agent/*", async (context, next) => {
+      const match = context.req.path.match(
+        /\/agent\/([^/]+)\/(?:run|connect|stop)(?:\/|$)/,
+      );
+      if (!match) return next();
+      let agentId: string;
+      try {
+        agentId = decodeURIComponent(match[1] ?? "");
+      } catch {
+        return context.json({ error: "Invalid Bot id." }, 400);
+      }
+      return withLocalActorContext(
+        {
+          actorId: context.var.actor.id,
+          role: context.var.actor.role,
+          agentId,
+        },
+        next,
+      );
+    });
+  }
   // Enterprise controls: capability switches and the model allowlist in front of the routes they
   // govern, the admin screen's API, and the SCIM verbs the GET/POST auth handler above does not take.
   app.use("/api/*", createEnterpriseGate(requireUser));
@@ -1382,6 +1410,17 @@ export function createApp(
         (await agentProfileStore.get(actor, botId)) !== null
     : async () => true;
 
+  if (config.runtime.mode === "local" && localRuntimeStore) {
+    app.route(
+      "/api/local-runtime",
+      createLocalRuntimeRoutes({
+        store: localRuntimeStore,
+        requireUser,
+        canUseBot,
+      }),
+    );
+  }
+
   // The Bot computer. Acting on a page needs the gateway and the policy it enforces, so both arrive
   // together or the routes are not mounted. An ungoverned computer is not a reduced feature. It is
   // the one shape of this feature that must not exist.
@@ -1920,20 +1959,15 @@ export function createApp(
   }
 
   if (threadIdentity) {
+    const readThread =
+      config.runtime.mode === "intelligence"
+        ? createThreadReader(
+            createIntelligenceClient(config.runtime.intelligence),
+          )
+        : undefined;
     app.route(
       "/api/threads",
-      createThreadRoutes(
-        threadIdentity,
-        requireUser,
-        // config.ts refuses to boot without the full Intelligence contract (see copilot.ts's
-        // header comment), so `config.runtime.intelligence` is never missing here. Built from it
-        // rather than assumed, though: this is the one place besides the runtime mount itself that
-        // needs to reach Intelligence, and it should keep working unmodified if that guarantee ever
-        // loosens and a deployment can legitimately have no reader to build.
-        createThreadReader(
-          createIntelligenceClient(config.runtime.intelligence),
-        ),
-      ),
+      createThreadRoutes(threadIdentity, requireUser, readThread),
     );
   }
 

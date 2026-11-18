@@ -62,6 +62,8 @@ import {
   type LearningRuntime,
 } from "./learning/runtime";
 import type { LearningSettingsStore } from "./learning/settings";
+import { LocalAgentRunner } from "./local-runtime/runner";
+import type { createLocalRuntimeStore } from "./local-runtime/store";
 import {
   type LoadPersonalMemory,
   PersonalMemoryMiddleware,
@@ -76,17 +78,10 @@ import { grantedToolGuidance, holdsWebSearch } from "./plugins/tools";
 import { UNTRUSTED_GUIDANCE } from "./untrusted-content";
 
 /**
- * The CopilotKit runtime, always in Intelligence mode.
- *
  * Package-declared built-in Bots run as CopilotKit `BuiltInAgent` instances. External Bots are
- * reached over AG-UI as `HttpAgent` instances, so anything that speaks the protocol remains a Bot
- * with no framework adapter here: LangGraph, Pydantic-AI, CrewAI, Mastra, ADK, or a hand-written
- * server.
- *
- * There is no SSE branch. Intelligence is a requirement of the product, not a tier: it owns
- * durable threads, memory and learning, and a deployment without it silently forgets every
- * conversation. config.ts refuses to boot without the full contract, so by the time this runs the
- * settings are present and this file has one mode.
+ * reached over AG-UI as `HttpAgent` instances. Intelligence mode delegates thread storage and
+ * realtime events to CopilotKit; local mode runs those same agents through a PostgreSQL-backed
+ * runner and event log.
  */
 
 /** Resolve the signed-in person for a request. Threads and memory are scoped to whoever this returns. */
@@ -1733,9 +1728,16 @@ export function mountCopilotRuntime(
     basePath?: string;
     onRunBusy?: (input: { threadId: string; busy: boolean }) => void;
     learningSettings?: LearningSettingsStore;
+    localRuntime?: {
+      store: ReturnType<typeof createLocalRuntimeStore>;
+      authorizeBot: (input: {
+        actorId: string;
+        role: string;
+        agentId: string;
+      }) => Promise<boolean>;
+    };
   } = {},
 ) {
-  const { intelligence } = config.runtime;
   const { basePath = "/api/copilotkit", onRunBusy, learningSettings } = options;
 
   /**
@@ -1770,6 +1772,42 @@ export function mountCopilotRuntime(
       throw error;
     }
   };
+
+  if (config.runtime.mode === "local") {
+    if (!options.localRuntime) {
+      throw new Error("Local runtime mode requires its durable runner store.");
+    }
+    const runtime = new CopilotRuntime({
+      agents: createRequestAgents(identifyActor, resolver) as never,
+      runner: new LocalAgentRunner(
+        options.localRuntime.store,
+        options.localRuntime.authorizeBot,
+      ),
+      telemetryProperties: {
+        ...(config.accessibility ? { accessibility_title: "OpenBot" } : {}),
+        ...desktopTelemetryProperties(),
+      },
+      ...(config.generativeUi ? { openGenerativeUI: true } : {}),
+      a2ui: { enabled: config.generativeUi },
+    });
+    return {
+      handler: createCopilotHonoHandler({ runtime, basePath }),
+      learning: undefined,
+      runnerConnection: () => ({ url: "", authToken: "" }),
+      threadLock: {
+        acquire: async (input: { runId: string }) => ({ runId: input.runId }),
+        renew: async () => undefined,
+        release: async () => undefined,
+      },
+      agentFor,
+      history: async (input: { threadId: string; actorId: string }) => {
+        const history = await options.localRuntime?.store.readHistory(input);
+        return history?.messages ?? [];
+      },
+    };
+  }
+
+  const { intelligence } = config.runtime;
 
   /*
    * One client, used by the runtime and by anything reading a thread beside it, so a hop reads the
