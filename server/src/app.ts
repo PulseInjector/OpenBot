@@ -1,8 +1,8 @@
+import { MAX_IMAGE_BYTES } from "@openbot/shared/attachments";
 import type { Hono as HonoApp, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { serveStatic } from "hono/bun";
-import { MAX_IMAGE_BYTES } from "@openbot/shared/attachments";
 import { enterpriseControls } from "./admin/controls";
 import { createEnterpriseGate } from "./admin/gate";
 import { createEnterpriseAdminRoutes } from "./admin/routes";
@@ -25,10 +25,10 @@ import type { ApprovalService } from "./approvals/service";
 import {
   type AuditEventType,
   type AuditInitiator,
-  auditEventsToCsv,
   AuditQueryError,
   type AuditReader,
   type AuditStore,
+  auditEventsToCsv,
   auditQueryFromUrl,
   DEPLOYMENT_INITIATOR,
   readAuditExportRows,
@@ -54,9 +54,6 @@ import { type ChannelStore, createChannelRoutes } from "./channels/routes";
 import type { ThreadIdentity } from "./channels/thread-identity";
 import { createThreadRoutes } from "./channels/thread-routes";
 import { createThreadReader } from "./channels/thread-status";
-import { withLocalActorContext } from "./local-runtime/actor-context";
-import { createLocalRuntimeRoutes } from "./local-runtime/routes";
-import type { createLocalRuntimeStore } from "./local-runtime/store";
 import { createComponentRoutes } from "./components/routes";
 import type { SandboxedStore } from "./components/sandboxed";
 import { createSandboxedRoutes } from "./components/sandboxed-routes";
@@ -92,6 +89,9 @@ import {
   createLearningRoutes,
   type LearningAdminDependencies,
 } from "./learning/routes";
+import { withLocalActorContext } from "./local-runtime/actor-context";
+import { createLocalRuntimeRoutes } from "./local-runtime/routes";
+import type { createLocalRuntimeStore } from "./local-runtime/store";
 import type { MemoryIngestion } from "./memory/ingestion";
 import { createMemoryRoutes } from "./memory/routes";
 import type { MemoryStore } from "./memory/store";
@@ -100,9 +100,9 @@ import { createPasswordRoutes, createSignInRoutes } from "./passwords/routes";
 import type { SignInService } from "./passwords/service";
 import type { OnboardingStore } from "./people/onboarding";
 import { MAX_PAGE, type PeopleStore } from "./people/store";
+import type { BrokerProvider } from "./plugins/access";
 import type { AccountModeSwitch } from "./plugins/account-mode";
 import type { ComposioBroker } from "./plugins/broker";
-import type { BrokerProvider } from "./plugins/access";
 import { createPluginRoutes } from "./plugins/routes";
 import { createSharedUseRoutes } from "./plugins/shared-use-routes";
 import type { SharedUseStore } from "./plugins/shared-use-store";
@@ -488,7 +488,7 @@ export function createApp(
       // and a deployment that pays for Intelligence never sees it. See self-host-banner.ts.
       selfHostBanner: selfHostBanner
         ? await selfHostBanner.shown()
-        : config.selfHostBanner,
+        : config.runtime.mode === "intelligence" && config.selfHostBanner,
       /*
        * Whether this is somebody trying OpenBot on their own machine, not an organization's
        * deployment. Onboarding reads it to explain where OpenBot can run, which only the person

@@ -1,9 +1,24 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { executeRecordedTool } from "@openbot/toolkit/tool-operation";
+import {
+  AbstractAgent,
+  type BaseEvent,
+  EventType,
+  type RunAgentInput,
+} from "@ag-ui/client";
+import {
+  executeRecordedTool,
+  type ToolOperationRecorder,
+} from "@openbot/toolkit/tool-operation";
 import { inArray } from "drizzle-orm";
+import { lastValueFrom, Observable, tap, toArray } from "rxjs";
 import { createDatabase } from "../src/db/client";
 import { agents, localThreadBindings, users } from "../src/db/schema";
+import {
+  currentLocalActorContext,
+  withLocalActorContext,
+} from "../src/local-runtime/actor-context";
+import { LocalAgentRunner } from "../src/local-runtime/runner";
 import {
   createLocalRuntimeStore,
   LocalExecutionLeaseError,
@@ -73,6 +88,7 @@ test("concurrent identical submissions create one durable run", async () => {
   ]);
 
   expect(left.run.id).toBe(right.run.id);
+  expect(left.run.id).not.toBe(left.run.requestKey);
   expect([left.created, right.created].filter(Boolean)).toHaveLength(1);
   expect(
     (await store.readHistory({ threadId, actorId: ownerId })).runs,
@@ -136,6 +152,100 @@ test("event order, message projection, and history survive a fresh store instanc
       afterSequence: 0,
     }),
   ).rejects.toBeInstanceOf(LocalRuntimeConflictError);
+});
+
+test("a reader follows only the observed run through commits from a separate process", async () => {
+  const threadId = thread();
+  const scope = { threadId, actorId: ownerId, agentId };
+  const { run: previous } = await store.submit(
+    submission(threadId, "previous"),
+  );
+  const previousToken = await store.claimAttempt({
+    threadId,
+    runId: previous.id,
+    owner: "previous",
+    leaseMs: 30_000,
+  });
+  await store.append(previousToken, {
+    kind: "event",
+    type: "CUSTOM",
+    payload: { name: "previous" },
+  });
+  await store.finishAttempt(previousToken, "succeeded");
+  const { run } = await store.submit(submission(threadId));
+  const token = await store.claimAttempt({
+    threadId,
+    runId: run.id,
+    owner: "active",
+    leaseMs: 30_000,
+  });
+  for (let i = 0; i < 101; i++) {
+    await store.append(token, {
+      kind: "event",
+      type: "CUSTOM",
+      payload: { name: `page-${i}` },
+    });
+  }
+  const target = await store.openThreadReplay(scope);
+  const first = await store.readReplayPage({
+    ...scope,
+    target,
+    afterSequence: 0,
+    limit: 100,
+  });
+  expect(first).toMatchObject({ more: true, terminal: false });
+  const applied = first.events.at(-2)?.sequence ?? 0;
+  const interruptedBeforeApplying = first.events.at(-1)?.sequence ?? 0;
+
+  const runner = new LocalAgentRunner(store, async () => true, 30_000, 10);
+  const sawExisting = Promise.withResolvers<void>();
+  const replay = withLocalActorContext({ ...scope, role: "user" }, () =>
+    lastValueFrom(
+      runner.connect({ threadId }).pipe(
+        tap(() => sawExisting.resolve()),
+        toArray(),
+      ),
+    ),
+  );
+  await sawExisting.promise;
+  const writer = Bun.spawn(
+    [
+      process.execPath,
+      "--no-env-file",
+      `${import.meta.dir}/fixtures/local-runtime-replay-writer.ts`,
+    ],
+    {
+      stdin: Buffer.from(JSON.stringify({ token, agentId, actorId: ownerId })),
+      stderr: "inherit",
+      stdout: "ignore",
+    },
+  );
+  expect(await writer.exited).toBe(0);
+  const events = await replay;
+  expect(events.map((event) => Reflect.get(event, "name"))).toEqual([
+    "previous",
+    ...Array.from({ length: 101 }, (_, i) => `page-${i}`),
+    "last",
+  ]);
+
+  const tail = await store.readReplayPage({
+    ...scope,
+    target,
+    afterSequence: applied,
+  });
+  expect(tail).toMatchObject({ more: false, terminal: true });
+  expect(tail.events[0]?.sequence).toBe(interruptedBeforeApplying);
+  expect(tail.events.at(-2)).toMatchObject({
+    type: "CUSTOM",
+    payload: { name: "last" },
+  });
+  expect(tail.events.at(-1)).toMatchObject({
+    runId: run.id,
+    type: "attempt.succeeded",
+  });
+  expect(
+    [...first.events.slice(0, -1), ...tail.events].map((row) => row.sequence),
+  ).toEqual(Array.from({ length: 109 }, (_, i) => i + 1));
 });
 
 test("one current attempt wins and an expired generation cannot append or start an operation", async () => {
@@ -321,7 +431,7 @@ test("stop closes operation admission while a dispatched late result still settl
   ]);
 });
 
-test("an old run stop cannot mark the next attempt for the same thread", async () => {
+test("only the current client run ID on the owned Bot thread can request Stop", async () => {
   const threadId = thread();
   const first = await store.submit(submission(threadId, "request-old", "old"));
   const oldAttempt = await store.claimAttempt({
@@ -339,32 +449,63 @@ test("an old run stop cannot mark the next attempt for the same thread", async (
     owner: "worker-new",
     leaseMs: 30_000,
   });
-  await expect(
-    store.requestStopForActor({
-      threadId,
-      actorId: ownerId,
-      agentId,
-      runId: first.run.id,
-    }),
-  ).resolves.toBe(false);
+  const scope = { threadId, actorId: ownerId, agentId };
+  for (const wrong of [
+    scope,
+    { ...scope, clientRunId: first.run.requestKey },
+    { ...scope, clientRunId: second.run.id },
+    { ...scope, clientRunId: "missing" },
+    { ...scope, clientRunId: second.run.requestKey, actorId: "another-user" },
+    { ...scope, clientRunId: second.run.requestKey, agentId: "another-bot" },
+    {
+      ...scope,
+      clientRunId: second.run.requestKey,
+      threadId: "another-thread",
+    },
+  ]) {
+    expect(await store.requestStopForActor(wrong)).toBeUndefined();
+  }
   await expect(store.stopRequested(currentAttempt)).resolves.toBe(false);
-  await expect(
-    store.requestStopForActor({
+  const stop = { ...scope, clientRunId: second.run.requestKey };
+  expect(await store.requestStopForActor(stop)).toEqual({
+    runId: second.run.id,
+    attemptId: currentAttempt.attemptId,
+  });
+  await expect(store.stopRequested(currentAttempt)).resolves.toBe(true);
+  expect(await store.requestStopForActor(stop)).toBeUndefined();
+  expect(
+    (await store.readHistory(scope)).events
+      .filter((event) => event.type === "attempt.stop_requested")
+      .map((event) => event.attemptId),
+  ).toEqual([currentAttempt.attemptId]);
+});
+
+test("an expired attempt cannot be stopped even with its exact client run ID", async () => {
+  let time = 0;
+  const timedStore = createLocalRuntimeStore(database, {
+    now: () => new Date(time),
+  });
+  const threadId = thread();
+  const { run } = await timedStore.submit(submission(threadId));
+  await timedStore.claimAttempt({
+    threadId,
+    runId: run.id,
+    owner: "expired",
+    leaseMs: 1,
+  });
+  time = 1;
+  expect(
+    await timedStore.requestStopForActor({
       threadId,
       actorId: ownerId,
       agentId,
-      runId: second.run.id,
+      clientRunId: run.requestKey,
     }),
-  ).resolves.toBe(true);
-  await expect(store.stopRequested(currentAttempt)).resolves.toBe(true);
-  await expect(
-    store.requestStopForActor({
-      threadId,
-      actorId: `${ownerId}-other`,
-      agentId,
-      runId: second.run.id,
-    }),
-  ).rejects.toBeInstanceOf(LocalRuntimeConflictError);
+  ).toBeUndefined();
+  expect(
+    (await timedStore.readHistory({ threadId, actorId: ownerId })).attempts[0]
+      ?.stopRequested,
+  ).toBe(false);
 });
 
 test("the shared execution adapter writes intent, dispatch, and result to the local timeline", async () => {
@@ -414,5 +555,150 @@ test("the shared execution adapter writes intent, dispatch, and result to the lo
       dispatched: true,
       result: { value: { pageId: "page-1", receipt: "tool-returned" } },
     },
+  ]);
+});
+
+test("configured Agents isolate tool operations across overlapping runs and Stop fences late results", async () => {
+  const leftThread = thread();
+  const rightThread = thread();
+  const leftStarted = Promise.withResolvers<void>();
+  const lateResult = Promise.withResolvers<string>();
+  const stopObserved = Promise.withResolvers<void>();
+  const blocked = Promise.withResolvers<unknown>();
+  const actor = { actorId: ownerId, role: "user", agentId };
+  const runner = new LocalAgentRunner(store, async () => true, 30_000, 5);
+
+  class ToolAgent extends AbstractAgent {
+    constructor(
+      threadId: string,
+      private readonly recorder: ToolOperationRecorder,
+    ) {
+      super({ threadId });
+    }
+
+    run(input: RunAgentInput): Observable<BaseEvent> {
+      return new Observable((subscriber) => {
+        const scope = { threadId: input.threadId, runId: input.runId };
+        const start = { type: EventType.RUN_STARTED, ...scope };
+        const end = { type: EventType.RUN_FINISHED, ...scope };
+        subscriber.next(start);
+        void (async () => {
+          const left = input.runId === "left";
+          await executeRecordedTool({
+            recorder: this.recorder,
+            toolName: "fixture_tool",
+            toolCallId: "same-call-id",
+            parameters: { marker: input.forwardedProps.fixture },
+            settlementTimeoutMs: left ? 500 : 30_000,
+            execute: async () => {
+              if (!left) return input.runId;
+              leftStarted.resolve();
+              await stopObserved.promise;
+              try {
+                await executeRecordedTool({
+                  recorder: this.recorder,
+                  toolName: "fixture_tool",
+                  toolCallId: "must-not-dispatch",
+                  parameters: {},
+                  execute: async () => "unexpected",
+                });
+                blocked.resolve("unexpected");
+              } catch (error) {
+                blocked.resolve(error);
+              }
+              return lateResult.promise;
+            },
+          });
+          subscriber.next(end);
+          subscriber.complete();
+        })().catch((error: unknown) => subscriber.error(error));
+      });
+    }
+    abortRun() {
+      stopObserved.resolve();
+    }
+  }
+
+  const run = (threadId: string, runId: string) =>
+    withLocalActorContext(actor, () => {
+      const operations = currentLocalActorContext()?.operations;
+      if (!operations) throw new Error("Missing fixture request context.");
+      const agent = new ToolAgent(threadId, operations.recorder).use(
+        (input, next) =>
+          next.run({
+            ...input,
+            forwardedProps: { fixture: `via-middleware-${runId}` },
+          }),
+      );
+      return lastValueFrom(
+        runner
+          .run({
+            threadId,
+            agent,
+            input: {
+              threadId,
+              runId,
+              messages: [],
+              state: {},
+              tools: [],
+              context: [],
+              forwardedProps: {},
+            },
+          })
+          .pipe(toArray()),
+      );
+    });
+  const left = run(leftThread, "left");
+  await leftStarted.promise;
+  await run(rightThread, "right");
+  expect(
+    await withLocalActorContext(actor, () =>
+      runner.stop({ threadId: leftThread, runId: "left" }),
+    ),
+  ).toBe(true);
+  expect(await blocked.promise).toBeInstanceOf(LocalExecutionLeaseError);
+  expect((await left).at(-1)).toMatchObject({
+    type: EventType.RUN_ERROR,
+    code: "STOPPED",
+  });
+  const leftHistory = () =>
+    store.readHistory({ threadId: leftThread, actorId: ownerId });
+  const rightHistory = await store.readHistory({
+    threadId: rightThread,
+    actorId: ownerId,
+  });
+  const stopped = await leftHistory();
+  expect(stopped.attempts[0]?.status).toBe("interrupted");
+  expect(stopped.operations).toMatchObject([
+    {
+      attemptId: stopped.attempts[0]?.id,
+      toolCallId: "same-call-id",
+      status: "unknown",
+      parameters: { marker: "via-middleware-left" },
+    },
+  ]);
+  expect(rightHistory.operations).toMatchObject([
+    {
+      attemptId: rightHistory.attempts[0]?.id,
+      toolCallId: "same-call-id",
+      status: "succeeded",
+      parameters: { marker: "via-middleware-right" },
+      result: { value: "right" },
+    },
+  ]);
+
+  await run(leftThread, "next");
+  lateResult.resolve("late receipt");
+  for (let i = 0; i < 100; i++) {
+    if ((await leftHistory()).operations[0]?.status === "succeeded") break;
+    await Bun.sleep(5);
+  }
+  expect((await leftHistory()).operations).toMatchObject([
+    {
+      id: stopped.operations[0]?.id,
+      status: "succeeded",
+      result: { value: "late receipt", late: true },
+    },
+    { status: "succeeded", result: { value: "next" } },
   ]);
 });

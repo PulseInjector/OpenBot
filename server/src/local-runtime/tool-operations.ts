@@ -19,9 +19,12 @@ export function localToolOperationRecorder(input: {
     toolName: string;
     parameters: Record<string, unknown>;
   }) => Promise<void>;
-}): ToolOperationRecorder {
+}): ToolOperationRecorder & { drain: () => Promise<void> } {
   const operationIds = new Set<string>();
-  const inFlight = new Map<string, Promise<void>>();
+  const inFlight = new Set<Promise<void>>();
+  const drain = async () => {
+    await Promise.all(inFlight);
+  };
   return {
     authorize: input.authorize,
     async begin(intent) {
@@ -40,20 +43,18 @@ export function localToolOperationRecorder(input: {
     track(operationId) {
       if (!operationIds.has(operationId))
         throw new Error("Unknown operation id.");
-      let release!: () => void;
-      const settled = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      inFlight.set(operationId, settled);
+      const settled = Promise.withResolvers<void>();
+      inFlight.add(settled.promise);
       return () => {
-        inFlight.delete(operationId);
-        release();
+        inFlight.delete(settled.promise);
+        settled.resolve();
       };
     },
     async stop(reason = "user") {
       await input.store.requestStop(input.token, reason);
-      await Promise.all([...inFlight.values()]);
+      await drain();
     },
+    drain,
     async settle(operationId, outcome, result) {
       if (!operationIds.has(operationId))
         throw new Error("Unknown operation id.");

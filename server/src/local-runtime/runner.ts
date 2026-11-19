@@ -1,9 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import {
-  type AbstractAgent,
-  type BaseEvent,
-  isRecognizedEvent,
-} from "@ag-ui/client";
+import { type BaseEvent, EventType, isRecognizedEvent } from "@ag-ui/client";
 import {
   AgentRunner,
   type AgentRunnerConnectRequest,
@@ -11,7 +7,7 @@ import {
   type AgentRunnerRunRequest,
   type AgentRunnerStopRequest,
 } from "@copilotkit/runtime/v2";
-import { concatMap, endWith, from, lastValueFrom, Observable } from "rxjs";
+import { Observable } from "rxjs";
 import { z } from "zod";
 import {
   currentLocalActorContext,
@@ -20,8 +16,11 @@ import {
 import {
   type createLocalRuntimeStore,
   type ExecutionToken,
+  LocalExecutionLeaseError,
   LocalRuntimeConflictError,
+  type ReplayTarget,
 } from "./store";
+import { localToolOperationRecorder } from "./tool-operations";
 
 type LocalRuntimeStore = ReturnType<typeof createLocalRuntimeStore>;
 type LocalBotAuthorizer = (actor: LocalActorContext) => Promise<boolean>;
@@ -45,7 +44,7 @@ const inputMessage = z
   .object({ id: z.string(), role: z.string(), content: z.unknown() })
   .passthrough();
 
-function actorContext(): LocalActorContext {
+function actorContext() {
   const actor = currentLocalActorContext();
   if (!actor?.actorId || !actor.agentId) {
     throw new LocalRuntimeConflictError("A signed-in actor is required.");
@@ -82,15 +81,6 @@ function eventFromRow(row: {
   return parsed.data;
 }
 
-function eventCursor(request: AgentRunnerConnectRequest): number {
-  const raw =
-    request.headers?.["x-openbot-event-sequence"] ??
-    request.headers?.["last-event-id"] ??
-    "0";
-  const value = Number(raw);
-  return Number.isSafeInteger(value) && value >= 0 ? value : 0;
-}
-
 function requestHash(request: AgentRunnerRunRequest): string {
   return createHash("sha256")
     .update(canonicalJson(request.input))
@@ -110,7 +100,7 @@ function inputMessagesEvent(request: AgentRunnerRunRequest): BaseEvent {
 
 /** Runs the existing AbstractAgent while using PostgreSQL as the shared event and lease store. */
 export class LocalAgentRunner extends AgentRunner {
-  private readonly activeAgents = new Map<string, AbstractAgent>();
+  private readonly activeAttempts = new Map<string, () => void>();
   private readonly owner = `local-runner-${randomUUID()}`;
 
   constructor(
@@ -141,22 +131,31 @@ export class LocalAgentRunner extends AgentRunner {
             source: "manual",
             requestKey: request.input.runId,
             requestHash: requestHash(request),
+            requireIdleThread: true,
           });
-          if (
-            submitted.run.status === "queued" ||
-            submitted.run.status === "running"
-          ) {
-            void this.execute(request, submitted.run.id);
+          if (submitted.created) {
+            void this.execute(request, submitted.run.id, actor).catch(
+              (error: unknown) => subscriber.error(error),
+            );
           }
           await this.follow({
             threadId,
             actor,
-            runId: submitted.run.id,
-            afterSequence: 0,
+            target: { kind: "run", runId: submitted.run.id },
             subscriber,
           });
         })
-        .catch((error: unknown) => subscriber.error(error));
+        .catch((error: unknown) => {
+          if (!(error instanceof LocalRuntimeConflictError))
+            return subscriber.error(error);
+          const event = {
+            type: EventType.RUN_ERROR,
+            code: "LOCAL_RUN_CONFLICT",
+            message: error.message,
+          };
+          subscriber.next(event);
+          subscriber.complete();
+        });
     });
   }
 
@@ -167,25 +166,24 @@ export class LocalAgentRunner extends AgentRunner {
         .then(async (allowed) => {
           if (!allowed)
             throw new LocalRuntimeConflictError("Bot access denied.");
-          const history = await this.store.readHistory({
+          const target = await this.store.openThreadReplay({
             threadId: request.threadId,
             actorId: actor.actorId,
+            agentId: actor.agentId,
           });
-          if (history.binding.agentId !== actor.agentId) {
-            throw new LocalRuntimeConflictError("Local thread was not found.");
-          }
-          const activeRun = [...history.runs]
-            .reverse()
-            .find((run) => run.status === "queued" || run.status === "running");
           await this.follow({
             threadId: request.threadId,
             actor,
-            ...(activeRun ? { runId: activeRun.id } : {}),
-            afterSequence: eventCursor(request),
+            target,
             subscriber,
           });
         })
-        .catch((error: unknown) => subscriber.error(error));
+        .catch((error: unknown) => {
+          if (!(error instanceof LocalRuntimeConflictError))
+            return subscriber.error(error);
+          // A new thread has no binding yet; inaccessible threads look the same to connect.
+          subscriber.complete();
+        });
     });
   }
 
@@ -195,6 +193,7 @@ export class LocalAgentRunner extends AgentRunner {
     const history = await this.store.readHistory({
       threadId: request.threadId,
       actorId: actor.actorId,
+      agentId: actor.agentId,
     });
     return (
       history.binding.agentId === actor.agentId &&
@@ -207,25 +206,26 @@ export class LocalAgentRunner extends AgentRunner {
 
   async stop(request: AgentRunnerStopRequest): Promise<boolean> {
     const actor = actorContext();
-    if (!request.runId || !(await this.authorizeBot(actor))) return false;
+    if (!request.runId?.trim() || !(await this.authorizeBot(actor)))
+      return false;
     const stopped = await this.store.requestStopForActor({
       threadId: request.threadId,
       actorId: actor.actorId,
       agentId: actor.agentId,
-      ...(request.runId ? { runId: request.runId } : {}),
+      clientRunId: request.runId,
     });
-    if (stopped && request.runId) {
-      this.activeAgents.get(`${request.threadId}:${request.runId}`)?.abortRun();
-    }
-    return stopped;
+    if (!stopped) return false;
+    this.activeAttempts.get(stopped.attemptId)?.();
+    return true;
   }
 
   private async execute(
     request: AgentRunnerRunRequest,
     runId: string,
+    actor: ReturnType<typeof actorContext>,
   ): Promise<void> {
     let token: ExecutionToken | undefined;
-    const key = `${request.input.threadId}:${runId}`;
+    let poll: ReturnType<typeof setInterval> | undefined;
     try {
       token = await this.store.claimAttempt({
         threadId: request.input.threadId,
@@ -234,160 +234,188 @@ export class LocalAgentRunner extends AgentRunner {
         leaseMs: this.leaseMs,
       });
       const currentToken = token;
-      this.activeAgents.set(key, request.agent);
-      const snapshot = inputMessagesEvent(request);
-      await this.store.append(currentToken, {
-        kind: "event",
-        type: snapshot.type,
-        payload: eventRecord(snapshot),
-      });
-      for (const message of request.input.messages) {
-        const projection = inputMessage.safeParse(message);
-        if (!projection.success) continue;
-        await this.store.append(currentToken, {
-          kind: "message.upsert",
-          messageId: projection.data.id,
-          role: projection.data.role,
-          content: { value: projection.data.content },
-        });
-      }
-      const messageText = new Map<string, string>();
-
-      let stopCheck: ReturnType<typeof setInterval> | undefined;
-      stopCheck = setInterval(
-        () => {
-          void this.store
-            .stopRequested(currentToken)
-            .then((stopped) => (stopped ? request.agent.abortRun() : undefined))
-            .catch(() => request.agent.abortRun());
-          void this.store
-            .renewLease(currentToken, this.leaseMs)
-            .catch(() => request.agent.abortRun());
+      const recorder = localToolOperationRecorder({
+        store: this.store,
+        token: currentToken,
+        actorId: actor.actorId,
+        authorize: async () => {
+          if (await this.store.stopRequested(currentToken)) {
+            throw new LocalExecutionLeaseError(
+              "This run no longer admits tool operations.",
+            );
+          }
+          if (!(await this.authorizeBot(actor))) {
+            throw new LocalRuntimeConflictError("Bot access denied.");
+          }
         },
-        Math.max(100, Math.floor(this.leaseMs / 3)),
+      });
+      actor.operations.bind(recorder);
+      let stopped = false;
+      const stop = () => {
+        stopped = true;
+        request.agent.abortRun();
+        void request.agent.detachActiveRun().catch(() => undefined);
+      };
+      this.activeAttempts.set(token.attemptId, stop);
+      let checking = false;
+      let renewAt = 0;
+      poll = setInterval(
+        () => {
+          if (checking) return;
+          checking = true;
+          void (async () => {
+            if (await this.store.stopRequested(currentToken)) stop();
+            if (Date.now() >= renewAt) {
+              await this.store.renewLease(currentToken, this.leaseMs);
+              renewAt = Date.now() + this.leaseMs / 3;
+            }
+          })()
+            .catch(stop)
+            .finally(() => {
+              checking = false;
+            });
+        },
+        Math.min(this.pollMs, this.leaseMs / 3),
       );
+      let errorAlreadyEmitted = false;
+      let failure: string | undefined;
       try {
-        await lastValueFrom(
-          request.agent.run(request.input).pipe(
-            concatMap((event) =>
-              from(
-                this.store.append(currentToken, {
-                  kind: "event",
-                  type: event.type,
-                  payload: eventRecord(event),
-                }),
-              ).pipe(
-                concatMap(async () => {
-                  switch (event.type) {
-                    case "TEXT_MESSAGE_START": {
-                      const start = textMessageStart.safeParse(event);
-                      if (!start.success) break;
-                      messageText.set(start.data.messageId, "");
-                      await this.store.append(currentToken, {
-                        kind: "message.upsert",
-                        messageId: start.data.messageId,
-                        role: start.data.role,
-                        content: { text: "" },
-                      });
-                      break;
-                    }
-                    case "TEXT_MESSAGE_CONTENT": {
-                      const content = textMessageContent.safeParse(event);
-                      if (!content.success) break;
-                      const text =
-                        (messageText.get(content.data.messageId) ?? "") +
-                        content.data.delta;
-                      messageText.set(content.data.messageId, text);
-                      await this.store.append(currentToken, {
-                        kind: "message.upsert",
-                        messageId: content.data.messageId,
-                        role: "assistant",
-                        content: { text },
-                      });
-                      break;
-                    }
-                  }
-                  return event;
-                }),
-              ),
-            ),
-            endWith(undefined),
-          ),
-        );
-        const stopped = await this.store.stopRequested(currentToken);
-        await this.store.finishAttempt(
-          currentToken,
-          stopped ? "interrupted" : "succeeded",
-        );
-      } finally {
-        clearInterval(stopCheck);
+        await this.prepareInput(request, currentToken);
+        if (stopped || (await this.store.stopRequested(currentToken))) {
+          throw new LocalExecutionLeaseError();
+        }
+        const messageText = new Map<string, string>();
+        await request.agent.runAgent(request.input, {
+          onEvent: async ({ event }) => {
+            if (stopped) return;
+            try {
+              await this.persistAgentEvent(currentToken, event, messageText);
+            } catch (error) {
+              if (!(error instanceof LocalExecutionLeaseError)) {
+                failure = "Local Agent event could not be persisted.";
+              }
+              stop();
+              return;
+            }
+            if (event.type === "RUN_ERROR") {
+              errorAlreadyEmitted = true;
+              failure = "Agent reported a run error.";
+            }
+          },
+        });
+      } catch (error) {
+        failure =
+          error instanceof Error
+            ? error.message.slice(0, 500)
+            : "Agent run failed.";
       }
-    } catch (error) {
-      if (token) {
-        await this.store
-          .finishAttempt(token, "failed", {
-            reason:
-              error instanceof Error
-                ? error.message.slice(0, 500)
-                : "Agent run failed.",
-          })
-          .catch(() => undefined);
-      }
+      await recorder.drain();
+      await this.store.finishAttempt(
+        currentToken,
+        failure === undefined ? "succeeded" : "failed",
+        {
+          reason: failure,
+          clientRunId: request.input.runId,
+          errorAlreadyEmitted,
+        },
+      );
     } finally {
-      if (this.activeAgents.get(key) === request.agent) {
-        this.activeAgents.delete(key);
-      }
+      if (poll !== undefined) clearInterval(poll);
+      if (token) this.activeAttempts.delete(token.attemptId);
+    }
+  }
+
+  private async prepareInput(
+    request: AgentRunnerRunRequest,
+    token: ExecutionToken,
+  ) {
+    const snapshot = inputMessagesEvent(request);
+    await this.store.append(token, {
+      kind: "event",
+      type: snapshot.type,
+      payload: eventRecord(snapshot),
+    });
+    await this.store.append(token, {
+      kind: "event",
+      type: "STATE_SNAPSHOT",
+      payload: { snapshot: request.input.state },
+    });
+    for (const message of request.input.messages) {
+      const projection = inputMessage.safeParse(message);
+      if (!projection.success) continue;
+      await this.store.append(token, {
+        kind: "message.upsert",
+        messageId: projection.data.id,
+        role: projection.data.role,
+        content: { value: projection.data.content },
+      });
+    }
+  }
+
+  private async persistAgentEvent(
+    token: ExecutionToken,
+    event: BaseEvent,
+    messageText: Map<string, string>,
+  ) {
+    await this.store.append(token, {
+      kind: "event",
+      type: event.type,
+      payload: eventRecord(event),
+    });
+    const start = textMessageStart.safeParse(event);
+    if (start.success) {
+      const { messageId, role } = start.data;
+      messageText.set(messageId, "");
+      await this.store.append(token, {
+        kind: "message.upsert",
+        messageId,
+        role,
+        content: { text: "" },
+      });
+    }
+    const content = textMessageContent.safeParse(event);
+    if (content.success) {
+      const { messageId, delta } = content.data;
+      const text = (messageText.get(messageId) ?? "") + delta;
+      messageText.set(messageId, text);
+      await this.store.append(token, {
+        kind: "message.upsert",
+        messageId,
+        role: "assistant",
+        content: { text },
+      });
     }
   }
 
   private async follow(input: {
     threadId: string;
     actor: LocalActorContext;
-    runId?: string;
-    afterSequence: number;
+    target: ReplayTarget;
     subscriber: {
       closed: boolean;
       next: (event: BaseEvent) => void;
       complete: () => void;
     };
   }): Promise<void> {
-    let cursor = input.afterSequence;
+    let cursor = 0;
     while (!input.subscriber.closed) {
-      const events = await this.store.readEventsAfter({
+      const page = await this.store.readReplayPage({
         threadId: input.threadId,
         actorId: input.actor.actorId,
         agentId: input.actor.agentId,
         afterSequence: cursor,
-        ...(input.runId ? { runId: input.runId } : {}),
-        limit: 100,
+        target: input.target,
       });
-      for (const row of events) {
-        cursor = row.sequence;
+      for (const row of page.events) {
+        if (input.subscriber.closed) return;
         const event = eventFromRow(row);
         if (event) input.subscriber.next(event);
+        cursor = row.sequence;
       }
-      const active = input.runId
-        ? await this.store.readRun({
-            threadId: input.threadId,
-            actorId: input.actor.actorId,
-            agentId: input.actor.agentId,
-            runId: input.runId,
-          })
-        : undefined;
-      if (events.length === 100) continue;
-      if (
-        input.runId &&
-        (!active || !["queued", "running"].includes(active.status))
-      ) {
+      if (page.more) continue;
+      if (page.terminal) {
         input.subscriber.complete();
         return;
-      }
-      if (!input.runId) {
-        if (events.length < 100) {
-          input.subscriber.complete();
-          return;
-        }
-        continue;
       }
       await new Promise((resolve) => setTimeout(resolve, this.pollMs));
     }

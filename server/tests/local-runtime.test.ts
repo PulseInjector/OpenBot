@@ -1,9 +1,5 @@
 import { expect, test } from "bun:test";
-import {
-  AbstractAgent,
-  type BaseEvent,
-  type RunAgentInput,
-} from "@ag-ui/client";
+import { AbstractAgent, EventType, type RunAgentInput } from "@ag-ui/client";
 import type {
   AgentRunnerConnectRequest,
   AgentRunnerRunRequest,
@@ -17,8 +13,8 @@ import { LocalAgentRunner } from "../src/local-runtime/runner";
 
 class TestAgent extends AbstractAgent {
   run(_input: RunAgentInput) {
-    return of<BaseEvent>({
-      type: "TEXT_MESSAGE_CONTENT",
+    return of({
+      type: EventType.TEXT_MESSAGE_CONTENT,
       messageId: "message-1",
       delta: "unused",
     });
@@ -56,19 +52,21 @@ function runtimeStore(options?: {
       events: [],
       operations: [],
     }),
-    readEventsAfter: async ({
-      afterSequence,
-      limit,
-    }: {
-      afterSequence: number;
-      limit: number;
-    }) => {
+    openThreadReplay: async () => ({
+      kind: "snapshot",
+      through: events.at(-1)?.sequence,
+    }),
+    readReplayPage: async ({ afterSequence }: { afterSequence: number }) => {
       cursors.push(afterSequence);
-      return events
-        .filter((event) => event.sequence > afterSequence)
-        .slice(0, limit);
+      const remaining = events.filter(
+        (event) => event.sequence > afterSequence,
+      );
+      return {
+        events: remaining.slice(0, 100),
+        more: remaining.length > 100,
+        terminal: true,
+      };
     },
-    readRun: async () => run,
   };
   return {
     store: store as never,
@@ -100,7 +98,7 @@ test("a completed duplicate run replays persisted events without claiming an att
   );
 
   expect(events).toEqual({
-    type: "TEXT_MESSAGE_CONTENT",
+    type: EventType.TEXT_MESSAGE_CONTENT,
     messageId: "message-1",
     delta: "persisted-0",
   });
@@ -121,34 +119,34 @@ test("a completed run replays every event across multiple history pages", async 
 
   expect(events).toHaveLength(101);
   expect(events.at(-1)).toEqual({
-    type: "TEXT_MESSAGE_CONTENT",
+    type: EventType.TEXT_MESSAGE_CONTENT,
     messageId: "message-1",
     delta: "persisted-100",
   });
   expect(fake.cursors).toEqual([0, 103]);
 });
 
-test("connect resumes strictly after the durable event sequence", async () => {
+test("ordinary connect replays from zero even if a sequence header is present", async () => {
   const fake = runtimeStore();
   const runner = new LocalAgentRunner(fake.store, async () => true);
   const request: AgentRunnerConnectRequest = {
     threadId: "thread-1",
-    headers: { "x-openbot-event-sequence": "3" },
+    headers: { "x-openbot-event-sequence": "4", "last-event-id": "4" },
   };
   const events = await withLocalActorContext(actor, () =>
     lastValueFrom(runner.connect(request)),
   );
 
   expect(events).toEqual({
-    type: "TEXT_MESSAGE_CONTENT",
+    type: EventType.TEXT_MESSAGE_CONTENT,
     messageId: "message-1",
     delta: "persisted-0",
   });
-  expect(fake.cursors).toEqual([3]);
+  expect(fake.cursors).toEqual([0]);
 });
 
 function historyRoutes(options?: { allowed?: boolean; agentId?: string }) {
-  const actorRecord = {
+  const actorRecord: AppVariables["actor"] = {
     id: "person-1",
     email: "person@example.test",
     role: "user",
@@ -162,7 +160,12 @@ function historyRoutes(options?: { allowed?: boolean; agentId?: string }) {
   };
   let historyReads = 0;
   let eventReads = 0;
+  let bindingReads = 0;
   const store = {
+    readBinding: async () => {
+      bindingReads += 1;
+      return { agentId: options?.agentId ?? "bot-1" };
+    },
     readHistory: async () => {
       historyReads += 1;
       return {
@@ -181,7 +184,7 @@ function historyRoutes(options?: { allowed?: boolean; agentId?: string }) {
       requireUser,
       canUseBot: async () => options?.allowed ?? true,
     }),
-    reads: () => ({ historyReads, eventReads }),
+    reads: () => ({ bindingReads, historyReads, eventReads }),
   };
 }
 
@@ -192,7 +195,7 @@ test("history and events require access to the bound Bot", async () => {
 
   expect(history.status).toBe(404);
   expect(events.status).toBe(404);
-  expect(reads()).toEqual({ historyReads: 2, eventReads: 0 });
+  expect(reads()).toEqual({ bindingReads: 2, historyReads: 0, eventReads: 0 });
 });
 
 test("event history validates the cursor before reading", async () => {
@@ -200,7 +203,7 @@ test("event history validates the cursor before reading", async () => {
   const response = await app.request("/threads/thread-1/events?after=-1");
 
   expect(response.status).toBe(400);
-  expect(reads()).toEqual({ historyReads: 0, eventReads: 0 });
+  expect(reads()).toEqual({ bindingReads: 0, historyReads: 0, eventReads: 0 });
 });
 
 test("authorized event history returns only events after the requested cursor", async () => {

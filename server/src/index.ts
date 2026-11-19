@@ -129,7 +129,6 @@ import {
   resolveModelApiKey,
 } from "./credentials";
 import { createDatabase } from "./db/client";
-import { createLocalRuntimeStore } from "./local-runtime/store";
 import {
   brokeredConnections,
   channelAgents,
@@ -161,6 +160,7 @@ import {
   createIntelligenceClient,
   observeIntelligenceAuthentication,
 } from "./intelligence-client";
+import { reportIntelligenceEntitlement } from "./intelligence-entitlement-check";
 import {
   createLearningAutoAssign,
   probeLearningContainer,
@@ -175,37 +175,38 @@ import {
 } from "./learning/ensure-container";
 import { clearLearningRevisionFallback } from "./learning/runtime";
 import { createLearningSettingsStore } from "./learning/settings";
+import { createLocalRuntimeStore } from "./local-runtime/store";
 import { createMemoryDefaults } from "./memory/defaults";
 import { createMemoryIngestion } from "./memory/ingestion";
 import { createIntelligenceMemory } from "./memory/intelligence";
 import { createMemoryStore } from "./memory/store";
-import { reportModelAvailability } from "./model-availability-check";
 import { memoryTools } from "./memory/tools";
-import { appAccessTools } from "./plugins/app-access-tool";
+import { reportModelAvailability } from "./model-availability-check";
 import { createSignInNotifier, createSignInResumer } from "./passwords/resume";
 import { createSignInService } from "./passwords/service";
 import { createPasswordStore } from "./passwords/store";
 import { createOnboardingStore } from "./people/onboarding";
 import { createPeopleStore } from "./people/store";
-import { createAccountModeSwitch } from "./plugins/account-mode";
-import { assertActivatable, providerDecision } from "./plugins/broker";
 import { BROKERED_PROFILE } from "./plugins/access";
-import { useRoutineTools } from "./plugins/builtin-routines";
+import { createAccountModeSwitch } from "./plugins/account-mode";
+import { appAccessTools } from "./plugins/app-access-tool";
 import { useArcadeClient } from "./plugins/arcade";
 import { createArcadeClient } from "./plugins/arcade-adapter";
+import { assertActivatable, providerDecision } from "./plugins/broker";
+import { useRoutineTools } from "./plugins/builtin-routines";
 import { useComposioClient } from "./plugins/composio";
 import { createComposioClient } from "./plugins/composio-adapter";
 import { backfillBrokeredLogos } from "./plugins/logos";
 import { redirectUriFor } from "./plugins/oauth";
 import {
-  createSharedUseGate,
-  createSharedUseStore,
-} from "./plugins/shared-use-store";
-import {
   arcadeVerifierNotice,
   selectProviderWiring,
   storedProvider,
 } from "./plugins/provider-wiring";
+import {
+  createSharedUseGate,
+  createSharedUseStore,
+} from "./plugins/shared-use-store";
 import { createPluginStore } from "./plugins/store";
 import {
   grantedSkills,
@@ -250,7 +251,6 @@ import { createRoutineRunner } from "./routines/runner";
 import { createRoutineStore } from "./routines/store";
 import { createIntentRouter } from "./routing/classify";
 import { createModelCompleter } from "./routing/model";
-import { reportIntelligenceEntitlement } from "./intelligence-entitlement-check";
 import { createSelfHostBanner } from "./self-host-banner";
 import { createTeamBots } from "./team-bots/team-bots";
 import {
@@ -2398,7 +2398,9 @@ auditRoutineStore(routineStore, bootAuditStore);
 // Asked only whether this deployment pays for Intelligence, for the self-host banner. Its own client
 // rather than the runtime's, the same as the thread reader: the constructor opens nothing.
 const selfHostBannerIntelligence =
-  createIntelligenceClient(intelligenceSettings);
+  config.runtime.mode === "intelligence"
+    ? createIntelligenceClient(intelligenceSettings)
+    : undefined;
 
 // Said once, at boot, whether Intelligence will let this deployment use what it is licensed for. A
 // self-hosted Intelligence without a licence refuses memory quietly; this is the line that says why.
@@ -2407,6 +2409,12 @@ if (selfHostBannerIntelligence) {
     entitlements: () => selfHostBannerIntelligence.getRuntimeEntitlements(),
   });
 }
+const selfHostBanner = selfHostBannerIntelligence
+  ? createSelfHostBanner({
+      enabled: config.selfHostBanner,
+      entitlements: () => selfHostBannerIntelligence.getRuntimeEntitlements(),
+    })
+  : undefined;
 
 const identityGithubCallback =
   config.githubApp && config.publicUrl
@@ -2608,10 +2616,7 @@ const app = createApp(
       auditStore: bootAuditStore,
     },
   },
-  createSelfHostBanner({
-    enabled: config.selfHostBanner && config.runtime.mode === "intelligence",
-    entitlements: () => selfHostBannerIntelligence.getRuntimeEntitlements(),
-  }),
+  selfHostBanner,
 
   identityStore,
   identityGithubCallback,

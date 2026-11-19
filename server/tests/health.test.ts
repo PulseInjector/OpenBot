@@ -120,6 +120,17 @@ describe("runtime capabilities", () => {
     expect(response.status).toBe(200);
     expect((await response.json()).selfHostBanner).toBe(false);
   });
+
+  test("reports the self-host banner as off in local runtime mode", async () => {
+    const local = createApp(
+      loadConfig(testEnvironment({ OPENBOT_RUNTIME_MODE: "local" })),
+    );
+
+    const response = await local.request("/api/capabilities");
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).selfHostBanner).toBe(false);
+  });
 });
 
 describe("authentication availability", () => {

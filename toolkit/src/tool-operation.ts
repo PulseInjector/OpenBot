@@ -38,7 +38,8 @@ export async function executeRecordedTool<T>(input: {
   const parameters = completeObject(
     input.validate ? input.validate(input.parameters) : input.parameters,
   );
-  if (!input.recorder) return input.execute(parameters);
+  const recorder = input.recorder;
+  if (!recorder) return input.execute(parameters);
   if (!input.toolCallId)
     throw new Error("Tool call id is required for recording.");
   const intent = {
@@ -46,11 +47,24 @@ export async function executeRecordedTool<T>(input: {
     toolName: input.toolName,
     parameters,
   };
-  await input.recorder.authorize(intent);
-  const operationId = await input.recorder.begin(intent);
-  await input.recorder.authorize(intent);
-  await input.recorder.dispatch(operationId);
-  const release = input.recorder.track?.(operationId);
+  await recorder.authorize(intent);
+  const operationId = await recorder.begin(intent);
+  await recorder.authorize(intent);
+  const release = recorder.track?.(operationId);
+  try {
+    await recorder.dispatch(operationId);
+    return await executeDispatched(input, parameters, recorder, operationId);
+  } finally {
+    release?.();
+  }
+}
+
+async function executeDispatched<T>(
+  input: Parameters<typeof executeRecordedTool<T>>[0],
+  parameters: Record<string, unknown>,
+  recorder: ToolOperationRecorder,
+  operationId: string,
+): Promise<T> {
   const timeoutMs = input.settlementTimeoutMs ?? 30_000;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const execution = Promise.resolve().then(() => input.execute(parameters));
@@ -66,7 +80,7 @@ export async function executeRecordedTool<T>(input: {
     ]);
     if (timer) clearTimeout(timer);
     const serialized = JSON.stringify(result);
-    await input.recorder.settle(operationId, "succeeded", {
+    await recorder.settle(operationId, "succeeded", {
       value: serialized === undefined ? null : JSON.parse(serialized),
     });
     return result;
@@ -74,7 +88,7 @@ export async function executeRecordedTool<T>(input: {
     if (timer) clearTimeout(timer);
     const timedOut =
       error instanceof Error && error.message === "Tool settlement timed out.";
-    await input.recorder.settle(operationId, "unknown", {
+    await recorder.settle(operationId, "unknown", {
       reason: timedOut
         ? "Tool did not settle before the operation deadline."
         : input.disconnected?.()
@@ -87,13 +101,13 @@ export async function executeRecordedTool<T>(input: {
         async (lateResult) => {
           try {
             const lateJson = JSON.stringify(lateResult);
-            await input.recorder?.settle(operationId, "succeeded", {
+            await recorder.settle(operationId, "succeeded", {
               value: lateJson === undefined ? null : JSON.parse(lateJson),
               late: true,
             });
           } catch (lateError) {
-            await input.recorder
-              ?.settle(operationId, "unknown", {
+            await recorder
+              .settle(operationId, "unknown", {
                 reason: "Late result could not be durably verified.",
                 error:
                   lateError instanceof Error
@@ -104,8 +118,8 @@ export async function executeRecordedTool<T>(input: {
           }
         },
         async (lateError: unknown) => {
-          await input.recorder
-            ?.settle(operationId, "unknown", {
+          await recorder
+            .settle(operationId, "unknown", {
               reason: "Dispatched tool failed after the settlement deadline.",
               error:
                 lateError instanceof Error
@@ -118,7 +132,5 @@ export async function executeRecordedTool<T>(input: {
       );
     }
     throw error;
-  } finally {
-    release?.();
   }
 }

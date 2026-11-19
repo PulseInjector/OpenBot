@@ -21,14 +21,20 @@ export function createLocalRuntimeRoutes(input: {
     const threadId = context.req.param("threadId");
     const actor = context.var.actor;
     try {
-      const history = await input.store.readHistory({
+      const binding = await input.store.readBinding({
         threadId,
         actorId: actor.id,
       });
-      if (!(await input.canUseBot(actor, history.binding.agentId))) {
+      if (!(await input.canUseBot(actor, binding.agentId))) {
         return context.json({ error: "Local thread was not found." }, 404);
       }
-      return context.json(history);
+      return context.json(
+        await input.store.readHistory({
+          threadId,
+          actorId: actor.id,
+          agentId: binding.agentId,
+        }),
+      );
     } catch {
       return context.json({ error: "Local thread was not found." }, 404);
     }
@@ -46,17 +52,17 @@ export function createLocalRuntimeRoutes(input: {
     }
     const actor = context.var.actor;
     try {
-      const history = await input.store.readHistory({
+      const binding = await input.store.readBinding({
         threadId: context.req.param("threadId"),
         actorId: actor.id,
       });
-      if (!(await input.canUseBot(actor, history.binding.agentId))) {
+      if (!(await input.canUseBot(actor, binding.agentId))) {
         return context.json({ error: "Local thread was not found." }, 404);
       }
       const events = await input.store.readEventsAfter({
         threadId: context.req.param("threadId"),
         actorId: actor.id,
-        agentId: history.binding.agentId,
+        agentId: binding.agentId,
         afterSequence: query.data.after,
         limit: query.data.limit,
       });

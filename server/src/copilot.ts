@@ -62,6 +62,7 @@ import {
   type LearningRuntime,
 } from "./learning/runtime";
 import type { LearningSettingsStore } from "./learning/settings";
+import { currentLocalActorContext } from "./local-runtime/actor-context";
 import { LocalAgentRunner } from "./local-runtime/runner";
 import type { createLocalRuntimeStore } from "./local-runtime/store";
 import {
@@ -1778,7 +1779,13 @@ export function mountCopilotRuntime(
       throw new Error("Local runtime mode requires its durable runner store.");
     }
     const runtime = new CopilotRuntime({
-      agents: createRequestAgents(identifyActor, resolver) as never,
+      agents: (async ({ request }: { request: Request }) => {
+        const operations = currentLocalActorContext()?.operations.recorder;
+        return resolver.resolveAgentsForActor(
+          await identifyActor(request),
+          operations ? { operations } : undefined,
+        );
+      }) as never,
       runner: new LocalAgentRunner(
         options.localRuntime.store,
         options.localRuntime.authorizeBot,

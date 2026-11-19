@@ -1,5 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, gt, inArray, lte } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  lte,
+  or,
+} from "drizzle-orm";
 import type { Database } from "../db/client";
 import {
   localAttempts,
@@ -11,6 +21,56 @@ import {
 } from "../db/schema";
 
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
+type ThreadScope = { threadId: string; actorId: string; agentId: string };
+export type ReplayTarget =
+  | { kind: "snapshot"; through: number }
+  | { kind: "run" | "thread-through-run"; runId: string };
+
+const replaySnapshot = {
+  isolationLevel: "repeatable read",
+  accessMode: "read only",
+} as const;
+
+async function scopedBinding(db: Database | Transaction, scope: ThreadScope) {
+  const [binding] = await db
+    .select()
+    .from(localThreadBindings)
+    .where(
+      and(
+        eq(localThreadBindings.threadId, scope.threadId),
+        eq(localThreadBindings.ownerUserId, scope.actorId),
+        eq(localThreadBindings.agentId, scope.agentId),
+      ),
+    );
+  if (!binding)
+    throw new LocalRuntimeConflictError("Local thread was not found.");
+  return binding;
+}
+
+function eventPage(
+  db: Database | Transaction,
+  input: {
+    threadId: string;
+    afterSequence: number;
+    through: number;
+    limit?: number;
+    runId?: string;
+  },
+) {
+  return db
+    .select()
+    .from(localEvents)
+    .where(
+      and(
+        eq(localEvents.threadId, input.threadId),
+        gt(localEvents.sequence, input.afterSequence),
+        lte(localEvents.sequence, input.through),
+        input.runId ? eq(localEvents.runId, input.runId) : undefined,
+      ),
+    )
+    .orderBy(asc(localEvents.sequence))
+    .limit(input.limit ?? 100);
+}
 
 export type LocalRunSource = "manual" | "routine" | "event" | "internal";
 export type AttemptOutcome = "succeeded" | "failed" | "interrupted";
@@ -139,6 +199,7 @@ async function assertExecutionToken(
       ),
     );
   if (!attempt) throw new LocalExecutionLeaseError();
+  return attempt;
 }
 
 export function createLocalRuntimeStore(
@@ -196,6 +257,7 @@ export function createLocalRuntimeStore(
       requestKey: string;
       requestHash: string;
       businessRef?: string;
+      requireIdleThread?: boolean;
     }) {
       return database.transaction(async (transaction) => {
         const at = now();
@@ -209,10 +271,7 @@ export function createLocalRuntimeStore(
             updatedAt: at,
           })
           .onConflictDoNothing();
-        const [binding] = await transaction
-          .select()
-          .from(localThreadBindings)
-          .where(eq(localThreadBindings.threadId, input.threadId));
+        const binding = await lockBinding(transaction, input.threadId);
         if (
           !binding ||
           binding.ownerUserId !== input.ownerUserId ||
@@ -228,8 +287,50 @@ export function createLocalRuntimeStore(
           );
         }
 
+        const [existing] = await transaction
+          .select()
+          .from(localRuns)
+          .where(
+            and(
+              eq(localRuns.threadId, input.threadId),
+              eq(localRuns.requestKey, input.requestKey),
+            ),
+          );
+        if (existing) {
+          if (existing.requestHash !== input.requestHash) {
+            throw new LocalRuntimeConflictError(
+              "The request key was already used for different work.",
+            );
+          }
+          return { run: existing, created: false };
+        }
+        if (input.requireIdleThread) {
+          const [busy] = await transaction
+            .select({ id: localRuns.id })
+            .from(localRuns)
+            .leftJoin(
+              localAttempts,
+              and(
+                eq(localAttempts.runId, localRuns.id),
+                eq(localAttempts.generation, binding.executionGeneration),
+                eq(localAttempts.status, "running"),
+                gt(localAttempts.leaseUntil, now()),
+              ),
+            )
+            .where(
+              and(
+                eq(localRuns.threadId, input.threadId),
+                or(eq(localRuns.status, "queued"), isNotNull(localAttempts.id)),
+              ),
+            )
+            .limit(1);
+          if (busy)
+            throw new LocalRuntimeConflictError(
+              "A run already occupies this local thread.",
+            );
+        }
         const runId = randomUUID();
-        const [inserted] = await transaction
+        const [run] = await transaction
           .insert(localRuns)
           .values({
             id: runId,
@@ -242,33 +343,7 @@ export function createLocalRuntimeStore(
             status: "queued",
             createdAt: at,
           })
-          .onConflictDoNothing({
-            target: [localRuns.threadId, localRuns.requestKey],
-          })
           .returning();
-        if (!inserted) {
-          const [existing] = await transaction
-            .select()
-            .from(localRuns)
-            .where(
-              and(
-                eq(localRuns.threadId, input.threadId),
-                eq(localRuns.requestKey, input.requestKey),
-              ),
-            );
-          if (!existing) {
-            throw new LocalRuntimeConflictError("Run deduplication failed.");
-          }
-          if (existing.requestHash !== input.requestHash) {
-            throw new LocalRuntimeConflictError(
-              "The request key was already used for different work.",
-            );
-          }
-          return { run: existing, created: false };
-        }
-        await lockBinding(transaction, input.threadId);
-        const run = inserted;
-        if (!run) throw new LocalRuntimeConflictError("Run was not created.");
         await appendEvent(transaction, {
           threadId: input.threadId,
           runId,
@@ -381,7 +456,7 @@ export function createLocalRuntimeStore(
       }
       return database.transaction(async (transaction) => {
         const at = now();
-        await assertExecutionToken(transaction, token, at);
+        await assertExecutionToken(transaction, token, at, true);
         const leaseUntil = new Date(at.getTime() + leaseMs);
         await transaction
           .update(localAttempts)
@@ -550,6 +625,7 @@ export function createLocalRuntimeStore(
               eq(localAttempts.owner, token.owner),
               eq(localAttempts.status, "running"),
               eq(localAttempts.stopRequested, false),
+              gt(localAttempts.leaseUntil, at),
             ),
           )
           .returning();
@@ -570,53 +646,52 @@ export function createLocalRuntimeStore(
       threadId: string;
       actorId: string;
       agentId: string;
-      runId?: string;
-      reason?: string;
+      clientRunId?: string;
     }) {
+      const clientRunId = input.clientRunId;
+      if (!clientRunId?.trim()) return undefined;
       return database.transaction(async (transaction) => {
-        const at = now();
         const binding = await lockBinding(transaction, input.threadId);
         if (
           !binding ||
           binding.ownerUserId !== input.actorId ||
           binding.agentId !== input.agentId
         ) {
-          throw new LocalRuntimeConflictError("Local thread was not found.");
+          return undefined;
         }
+        const at = now();
         const [active] = await transaction
-          .select()
+          .select({ attemptId: localAttempts.id, runId: localRuns.id })
           .from(localAttempts)
+          .innerJoin(localRuns, eq(localRuns.id, localAttempts.runId))
           .where(
             and(
               eq(localAttempts.threadId, input.threadId),
+              eq(localAttempts.generation, binding.executionGeneration),
               eq(localAttempts.status, "running"),
+              eq(localAttempts.stopRequested, false),
               gt(localAttempts.leaseUntil, at),
-              input.runId ? eq(localAttempts.runId, input.runId) : undefined,
+              eq(localRuns.threadId, input.threadId),
+              eq(localRuns.actorId, input.actorId),
+              eq(localRuns.requestKey, clientRunId),
+              eq(localRuns.status, "running"),
             ),
           )
           .limit(1);
-        if (!active) return false;
-        const [attempt] = await transaction
+        if (!active) return undefined;
+        await transaction
           .update(localAttempts)
           .set({ stopRequested: true })
-          .where(
-            and(
-              eq(localAttempts.id, active.id),
-              eq(localAttempts.status, "running"),
-              eq(localAttempts.stopRequested, false),
-            ),
-          )
-          .returning();
-        if (!attempt) return false;
+          .where(eq(localAttempts.id, active.attemptId));
         await appendEvent(transaction, {
           threadId: input.threadId,
           runId: active.runId,
-          attemptId: active.id,
+          attemptId: active.attemptId,
           type: "attempt.stop_requested",
-          payload: { reason: input.reason ?? "user" },
+          payload: { reason: "user" },
           createdAt: at,
         });
-        return true;
+        return active;
       });
     },
 
@@ -637,62 +712,121 @@ export function createLocalRuntimeStore(
       return attempt?.stopRequested ?? true;
     },
 
-    async readRun(input: {
-      threadId: string;
-      actorId: string;
-      agentId: string;
-      runId: string;
-    }) {
-      const [row] = await database
-        .select({ run: localRuns })
-        .from(localRuns)
-        .innerJoin(
-          localThreadBindings,
-          eq(localThreadBindings.threadId, localRuns.threadId),
-        )
-        .where(
-          and(
-            eq(localRuns.id, input.runId),
-            eq(localRuns.threadId, input.threadId),
-            eq(localThreadBindings.ownerUserId, input.actorId),
-            eq(localThreadBindings.agentId, input.agentId),
-          ),
-        );
-      return row?.run;
+    async openThreadReplay(scope: ThreadScope): Promise<ReplayTarget> {
+      return database.transaction(async (tx) => {
+        const binding = await scopedBinding(tx, scope);
+        const [active] = await tx
+          .select({ id: localRuns.id })
+          .from(localRuns)
+          .where(
+            and(
+              eq(localRuns.threadId, scope.threadId),
+              inArray(localRuns.status, ["running", "queued"]),
+            ),
+          )
+          .orderBy(
+            desc(localRuns.status),
+            desc(localRuns.createdAt),
+            desc(localRuns.id),
+          )
+          .limit(1);
+        return active
+          ? { kind: "thread-through-run", runId: active.id }
+          : { kind: "snapshot", through: binding.nextEventSequence - 1 };
+      }, replaySnapshot);
     },
 
-    async readEventsAfter(input: {
-      threadId: string;
-      actorId: string;
-      agentId: string;
-      afterSequence: number;
-      limit?: number;
-      runId?: string;
-    }) {
+    async readReplayPage(
+      input: ThreadScope & {
+        target: ReplayTarget;
+        afterSequence: number;
+        limit?: number;
+      },
+    ) {
+      return database.transaction(async (tx) => {
+        const binding = await scopedBinding(tx, input);
+        const { target } = input;
+        let through = binding.nextEventSequence - 1;
+        let terminal = target.kind === "snapshot";
+        if (target.kind === "snapshot") {
+          through = target.through;
+        } else {
+          const [run] = await tx
+            .select({ status: localRuns.status })
+            .from(localRuns)
+            .where(
+              and(
+                eq(localRuns.threadId, input.threadId),
+                eq(localRuns.id, target.runId),
+              ),
+            );
+          if (!run)
+            throw new LocalRuntimeConflictError("Local run was not found.");
+          terminal = run.status !== "running" && run.status !== "queued";
+          if (terminal && target.kind === "thread-through-run") {
+            const [end] = await tx
+              .select({ sequence: localEvents.sequence })
+              .from(localEvents)
+              .where(
+                and(
+                  eq(localEvents.threadId, input.threadId),
+                  eq(localEvents.runId, target.runId),
+                  inArray(localEvents.type, [
+                    "attempt.succeeded",
+                    "attempt.failed",
+                    "attempt.interrupted",
+                  ]),
+                ),
+              )
+              .orderBy(desc(localEvents.sequence))
+              .limit(1);
+            if (!end)
+              throw new LocalRuntimeConflictError(
+                "Local run has no terminal event.",
+              );
+            through = end.sequence;
+          }
+        }
+        const limit = input.limit ?? 100;
+        const rows = await eventPage(tx, {
+          ...input,
+          through,
+          limit: limit + 1,
+          runId: target.kind === "run" ? target.runId : undefined,
+        });
+        return {
+          events: rows.slice(0, limit),
+          more: rows.length > limit,
+          terminal,
+        };
+      }, replaySnapshot);
+    },
+
+    async readEventsAfter(
+      input: ThreadScope & { afterSequence: number; limit?: number },
+    ) {
+      return database.transaction(async (tx) => {
+        const binding = await scopedBinding(tx, input);
+        return eventPage(tx, {
+          ...input,
+          through: binding.nextEventSequence - 1,
+        });
+      }, replaySnapshot);
+    },
+
+    async readBinding(input: { threadId: string; actorId: string }) {
       const [binding] = await database
-        .select({ threadId: localThreadBindings.threadId })
+        .select()
         .from(localThreadBindings)
         .where(
           and(
             eq(localThreadBindings.threadId, input.threadId),
             eq(localThreadBindings.ownerUserId, input.actorId),
-            eq(localThreadBindings.agentId, input.agentId),
           ),
         );
       if (!binding)
         throw new LocalRuntimeConflictError("Local thread was not found.");
-      return database
-        .select()
-        .from(localEvents)
-        .where(
-          and(
-            eq(localEvents.threadId, input.threadId),
-            gt(localEvents.sequence, input.afterSequence),
-            input.runId ? eq(localEvents.runId, input.runId) : undefined,
-          ),
-        )
-        .orderBy(asc(localEvents.sequence))
-        .limit(input.limit ?? 100);
+      return binding;
     },
 
     async settleOperation(
@@ -739,11 +873,44 @@ export function createLocalRuntimeStore(
     async finishAttempt(
       token: ExecutionToken,
       outcome: AttemptOutcome,
-      detail?: { reason?: string; resultRef?: string },
+      detail?: {
+        reason?: string;
+        resultRef?: string;
+        clientRunId?: string;
+        errorAlreadyEmitted?: boolean;
+      },
     ) {
       return database.transaction(async (transaction) => {
         const at = now();
-        await assertExecutionToken(transaction, token, at, true);
+        const attempt = await assertExecutionToken(
+          transaction,
+          token,
+          at,
+          true,
+        );
+        outcome = attempt.stopRequested ? "interrupted" : outcome;
+        if (
+          detail?.clientRunId &&
+          (outcome === "interrupted" ||
+            (outcome === "failed" && !detail.errorAlreadyEmitted))
+        ) {
+          await appendEvent(transaction, {
+            threadId: token.threadId,
+            runId: token.runId,
+            attemptId: token.attemptId,
+            type: "RUN_ERROR",
+            createdAt: at,
+            payload: {
+              threadId: token.threadId,
+              runId: detail.clientRunId,
+              code: outcome === "interrupted" ? "STOPPED" : "LOCAL_RUN_FAILED",
+              message:
+                outcome === "interrupted"
+                  ? "Run stopped by user"
+                  : "Local Agent run failed.",
+            },
+          });
+        }
         await transaction
           .update(localAttempts)
           .set({ status: outcome, endReason: detail?.reason, finishedAt: at })
@@ -769,19 +936,34 @@ export function createLocalRuntimeStore(
           runId: token.runId,
           attemptId: token.attemptId,
           type: `attempt.${outcome}`,
-          payload: detail ?? {},
+          payload: {
+            ...(detail?.reason ? { reason: detail.reason } : {}),
+            ...(detail?.resultRef ? { resultRef: detail.resultRef } : {}),
+          },
           createdAt: at,
         });
       });
     },
 
-    async readHistory(input: { threadId: string; actorId: string }) {
+    async readHistory(input: {
+      threadId: string;
+      actorId: string;
+      agentId?: string;
+    }) {
       return database.transaction(
         async (transaction) => {
           const [binding] = await transaction
             .select()
             .from(localThreadBindings)
-            .where(eq(localThreadBindings.threadId, input.threadId));
+            .where(
+              and(
+                eq(localThreadBindings.threadId, input.threadId),
+                eq(localThreadBindings.ownerUserId, input.actorId),
+                input.agentId === undefined
+                  ? undefined
+                  : eq(localThreadBindings.agentId, input.agentId),
+              ),
+            );
           if (!binding || binding.ownerUserId !== input.actorId) {
             throw new LocalRuntimeConflictError("Local thread was not found.");
           }
