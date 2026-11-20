@@ -3,9 +3,9 @@
 This guide covers changes to the aooo bot fork. The repository and environment setup are described
 in [README.md](README.md) and [docs/configuration.md](docs/configuration.md).
 
-Before starting a project task, read `.local/project-context.md` if it exists. It points to private
-planning material and local working conventions; keep its links and any credentials out of tracked
-repository files.
+Before starting a project task, read [AGENTS.md](AGENTS.md) and the stage plan it points to. That
+plan holds the goals, work sequence, acceptance criteria, and completion records. Keep credentials
+and personal notes in `.local/`, which Git ignores; never put them in a tracked file.
 
 ## Start a Change
 

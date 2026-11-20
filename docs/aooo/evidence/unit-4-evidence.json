@@ -41,7 +41,7 @@
     "limitation": "A durable tool return is not proof of remote state; external effects without a verifiable receipt remain unknown until read back."
   },
   "evidenceFiles": [
-    "tests/fixtures/aooo/unit-4-checks.md",
+    "docs/aooo/evidence/unit-4-checks.md",
     "server/tests/local-runtime-store.integration.test.ts",
     "toolkit/tests/tool-operation.test.ts",
     "server/drizzle/0069_tool_operation_stop_boundary.sql"

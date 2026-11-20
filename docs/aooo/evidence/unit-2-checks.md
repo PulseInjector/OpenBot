@@ -2,7 +2,7 @@
 
 Checked on 2026-11-18 on feat/local-bot-workbench, starting from 50bf5e17; depends on
 unit 1 (b9b58ed0). The implementation commit contains this report and unit-2-evidence.json.
-Find its exact commit with git log -- tests/fixtures/aooo/unit-2-checks.md; the completion
+Find its exact commit with git log -- docs/aooo/evidence/unit-2-checks.md; the completion
 record in the implementation plan also records the pushed commit.
 
 ## Environment and scope

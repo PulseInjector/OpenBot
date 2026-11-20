@@ -92,7 +92,7 @@ checked. Creation and grants are separate operations, so a grant failure leaves 
 
 Apply generated migrations `0066_even_spyke` and `0067_shiny_chronomancer` before serving the new
 creation and owner-grant routes. Focused acceptance commands and recorded counts are in
-[the unit 2 check record](../tests/fixtures/aooo/unit-2-checks.md).
+[the unit 2 check record](aooo/evidence/unit-2-checks.md).
 
 ## Migrations
 
