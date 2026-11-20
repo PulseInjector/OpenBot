@@ -70,7 +70,7 @@ Every required item, with where it was checked.
 | 14 | Relevant tests, typecheck, and `git diff --check` pass. | Passed with the fix in place; the fix was later reverted, so the gate shows one open error | See below. |
 | 15 | The acceptance record contains commands, results, and sanitized log locations. | Passed | This file. |
 
-## A failure this run found, and why it is open
+## A failure this run found, and its follow-up fix
 
 The unit 5 closeout run on 2026-11-19 recorded `bun run typecheck:tests` as failing with one new
 error that had not been in the baseline:
@@ -86,9 +86,14 @@ making `RuntimeCapabilities` a union of the `intelligence` and `local` shapes br
 places, and with that fix in place the gate was clean against its 240 known baseline errors.
 
 On 2026-11-20 the doc-migration task reverted that fix to keep its own changes free of code. The
-error is present again and open. The tests typecheck baseline shows this 1 error until a follow-up
-code task lands the same 3-line narrowing. The revert changes no runtime behavior: the tests still
-pass when run, because the mode in that test is `intelligence` either way.
+error was present again and open until a follow-up code task landed the same 3-line narrowing. The
+revert changed no runtime behavior: the tests still pass when run, because the mode in that test is
+`intelligence` either way.
+
+On 2026-11-20 that follow-up landed (issue #3): the narrowing guard was re-added at
+`server/tests/config.test.ts:63`, matching the pattern the file uses at lines 145 and 160.
+`bun run typecheck:tests` is clean against the 240-error baseline, and
+`bun test server/tests/config.test.ts` passes 144 tests.
 
 ## Actual checks
 
