@@ -149,7 +149,8 @@ None of them touches the local runtime, authentication, replay or tool recording
 - Bun 1.4.4 was used, not the pinned 1.4.3.
 - The earlier Stop-timing failure from the 2026-11-19 run did not recur in this run either. Its
   cause is still unconfirmed. The evidence for that investigation, including what the logs can and
-  cannot distinguish, is in the local retrospective and is not reproduced here.
+  cannot distinguish, is in [unit-5-retrospective.md](unit-5-retrospective.md) and is not
+  reproduced here.
 
 ## Reproduction
 
