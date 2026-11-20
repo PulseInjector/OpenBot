@@ -146,6 +146,8 @@ and the directory agree. Compare `meta/_journal.json` against `ls server/drizzle
 
 ## Quality checks
 
+For the aooo local workbench, run `bun run verify:aooo` from the root. It runs the two-server HTTP journey against a fresh, migrated PostgreSQL cluster, keeps its evidence, and removes the cluster. Pass a single repository-relative Bun test file to reuse this setup. See the [verification skill and feature map](../.claude/skills/verify-aooo/SKILL.md) for prerequisites, proof boundaries, and how to add the next unit's journey.
+
 Run these before opening a pull request:
 
 ```sh

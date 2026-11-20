@@ -273,6 +273,13 @@ test("two real local servers share authenticated run, Stop, history, replay and 
         (response) => response?.ok ?? false,
       );
       await ready?.body?.cancel();
+      const capabilities = await request(i, "/api/capabilities");
+      expect(await capabilities.json()).toMatchObject({
+        mode: "local",
+        durableHistory: true,
+      });
+      const me = await request(i, "/api/me", { cookie: ownerCookie });
+      expect(await me.json()).toMatchObject({ user: { id: owner } });
     }
     const threadId = randomUUID();
     const agentRoute = (id: string, action: string) =>
@@ -439,6 +446,37 @@ test("two real local servers share authenticated run, Stop, history, replay and 
     const after = await history();
     expect(after.runs.at(-1)?.status).toBe("cancelled");
     expect(after.operations.at(-1)?.status).toBe("succeeded");
+
+    // Preserve the observations before fixture teardown, without session headers or message bodies.
+    if (process.env.AOOO_EVIDENCE_DIR) {
+      await Bun.write(
+        join(process.env.AOOO_EVIDENCE_DIR, "replay-stop.json"),
+        JSON.stringify(
+          {
+            threadId,
+            initial: {
+              clientRunId: first.runId,
+              terminal: initialEvents.at(-1)?.type,
+              stored: saved.runs[0],
+            },
+            stop: {
+              clientRunId: second.runId,
+              before: during.operations.at(-1)?.status,
+              terminal: stopped.at(-1)?.code,
+              stored: after.runs.at(-1),
+              operation: after.operations.at(-1)?.status,
+            },
+            replay: {
+              initialEvents: initialEvents.length,
+              reconnectedEvents: complete.length,
+            },
+            fixtureToolCalls: calls.length,
+          },
+          null,
+          2,
+        ),
+      );
+    }
 
     let cursor = 0;
     const sequences = [];

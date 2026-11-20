@@ -22,6 +22,7 @@
     "typecheck": "bun run --filter '*' typecheck",
     "typecheck:tests": "bun scripts/typecheck-tests.ts",
     "test:ci": "bun scripts/test-ci.ts",
+    "verify:aooo": "scripts/verify-aooo",
     "test:server:sharded": "bun scripts/test-server-sharded.ts",
     "test:mutations": "bun scripts/mutation-register.ts",
     "pretest": "bun run generate:app-config",
