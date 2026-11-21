@@ -1,5 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { type BaseEvent, EventType, isRecognizedEvent } from "@ag-ui/client";
+import {
+  aggregateTokenUsage,
+  type BaseEvent,
+  EventType,
+  isRecognizedEvent,
+  type TokenUsage,
+} from "@ag-ui/client";
 import {
   AgentRunner,
   type AgentRunnerConnectRequest,
@@ -44,6 +50,45 @@ const textMessageContent = z
 const inputMessage = z
   .object({ id: z.string(), role: z.string(), content: z.unknown() })
   .passthrough();
+const tokenCount = z.number().int().nonnegative();
+const modelUsage = z.object({
+  provider: z.string().optional(),
+  model: z.string().optional(),
+  inputTokens: tokenCount.optional(),
+  outputTokens: tokenCount.optional(),
+  totalTokens: tokenCount.optional(),
+});
+const runFinishedUsage = z
+  .object({
+    type: z.literal(EventType.RUN_FINISHED),
+    usage: z.array(modelUsage).optional(),
+  })
+  .passthrough();
+
+type ModelUsage = Pick<
+  TokenUsage,
+  "provider" | "model" | "inputTokens" | "outputTokens" | "totalTokens"
+>;
+
+function usageFromFinishedEvent(event: BaseEvent): ModelUsage | undefined {
+  const parsed = runFinishedUsage.safeParse(event);
+  if (!parsed.success) return undefined;
+  const [usage] = aggregateTokenUsage(parsed.data.usage ?? []);
+  if (!usage) return undefined;
+  return {
+    ...(usage.provider === undefined ? {} : { provider: usage.provider }),
+    ...(usage.model === undefined ? {} : { model: usage.model }),
+    ...(usage.inputTokens === undefined
+      ? {}
+      : { inputTokens: usage.inputTokens }),
+    ...(usage.outputTokens === undefined
+      ? {}
+      : { outputTokens: usage.outputTokens }),
+    ...(usage.totalTokens === undefined
+      ? {}
+      : { totalTokens: usage.totalTokens }),
+  };
+}
 
 function actorContext() {
   const actor = currentLocalActorContext();
@@ -280,6 +325,7 @@ export class LocalAgentRunner extends AgentRunner {
       );
       let errorAlreadyEmitted = false;
       let failure: string | undefined;
+      let usage: ModelUsage | undefined;
       try {
         await this.prepareInput(request, currentToken);
         if (stopped || (await this.store.stopRequested(currentToken))) {
@@ -298,12 +344,22 @@ export class LocalAgentRunner extends AgentRunner {
               stop();
               return;
             }
+            if (event.type === EventType.RUN_FINISHED) {
+              usage ??= usageFromFinishedEvent(event);
+            }
             if (event.type === "RUN_ERROR") {
               errorAlreadyEmitted = true;
               failure = "Agent reported a run error.";
             }
           },
         });
+        if (usage) {
+          await this.store.append(currentToken, {
+            kind: "event",
+            type: "model.usage",
+            payload: usage,
+          });
+        }
       } catch (error) {
         failure =
           error instanceof Error
