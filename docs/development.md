@@ -40,6 +40,14 @@ bash scripts/start.sh
 
 Use `bash scripts/start.sh` for the full local stack. It starts Docker services, applies migrations, starts the API server, the app, and the routine worker, and verifies health routes.
 
+For the local runtime without Intelligence credentials, start the same stack in local mode:
+
+```sh
+OPENBOT_RUNTIME_MODE=local bash scripts/start.sh
+```
+
+See [configuration.md](configuration.md#required-api-server-variables) for the mode and its variables.
+
 Use `bash scripts/stop.sh` to take it down: the app, the routine worker, the API server, the Docker services, and each Bot's computer, which the supervisor makes rather than compose and which therefore outlives `docker compose down`. Pass `--keep-computers` to leave those browsers signed in. Nothing is deleted either way.
 
 Use `bun run dev` only when you want the app and API server without starting the Docker Bots and computers.
@@ -89,10 +97,6 @@ saves its first ref set in `owner_app_grant_requests`, re-reads existing grants,
 missing refs. A changed explicit confirmation returns 409; tools added by a directory refresh are
 never included in that retry. Current ownership, connection, and tool eligibility are still
 checked. Creation and grants are separate operations, so a grant failure leaves the Bot present.
-
-Apply generated migrations `0066_even_spyke` and `0067_shiny_chronomancer` before serving the new
-creation and owner-grant routes. Focused acceptance commands and recorded counts are in
-[the unit 2 check record](aooo/evidence/unit-2-checks.md).
 
 ## Migrations
 
@@ -147,6 +151,18 @@ and the directory agree. Compare `meta/_journal.json` against `ls server/drizzle
 ## Quality checks
 
 For the aooo local workbench, run `bun run verify:aooo` from the root. It runs the two-server HTTP journey against a fresh, migrated PostgreSQL cluster, keeps its evidence, and removes the cluster. Pass a single repository-relative Bun test file to reuse this setup. See the [verification skill and feature map](../.claude/skills/verify-aooo/SKILL.md) for prerequisites, proof boundaries, and how to add the next unit's journey.
+
+Check each step of a stage-plan unit with one command:
+
+```sh
+bun scripts/aooo/step-gate.ts <test files...> --files <the step's new or edited files> [--journey <repository-relative .test.ts path>] [--note]
+```
+
+The gate runs the workspace typecheck, the test typecheck against the frozen baseline in
+`server/tests/typecheck-baseline.txt`, lint, format, each named test file, and the import-sort and
+assist rules over the step's own files. An entry outside the frozen baseline is a new regression,
+not known debt. The baseline file's header states the policy for updating the baseline. With
+`--journey`, the gate also runs the isolated acceptance runner.
 
 Run these before opening a pull request:
 
