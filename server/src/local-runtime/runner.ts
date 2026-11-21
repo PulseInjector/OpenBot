@@ -16,6 +16,7 @@ import {
 import {
   type createLocalRuntimeStore,
   type ExecutionToken,
+  LOCAL_LEASE_MS,
   LocalExecutionLeaseError,
   LocalRuntimeConflictError,
   type ReplayTarget,
@@ -106,7 +107,7 @@ export class LocalAgentRunner extends AgentRunner {
   constructor(
     private readonly store: LocalRuntimeStore,
     private readonly authorizeBot: LocalBotAuthorizer,
-    private readonly leaseMs = 30_000,
+    private readonly leaseMs = LOCAL_LEASE_MS,
     private readonly pollMs = 250,
   ) {
     super();

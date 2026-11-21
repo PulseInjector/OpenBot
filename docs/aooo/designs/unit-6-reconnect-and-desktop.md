@@ -32,9 +32,14 @@ The design adds one store method, one client branch, one shared status module, o
 
 ```ts
 // server/src/local-runtime/store.ts
-settleLapsedThreadWork(scope: ThreadScope):
-  Promise<Array<{ runId: string; attemptId: string }>>
+settleLapsedThreadWork(input: {
+  threadId: string;
+  actorId: string;
+  agentId?: string;
+}): Promise<Array<{ runId: string; attemptId: string }>
 ```
+
+As built, the input takes an optional `agentId` rather than the full `ThreadScope`, because the `readHistory` caller at `server/src/copilot.ts:1810-1812` passes none and a required field would either fail the typecheck or silently skip settlement for that caller. `openThreadReplay` passes its full scope unchanged. The returned array holds one entry per interrupted attempt, so a zero-attempt orphan settles without an entry.
 
 A run qualifies when its status is `running` or `queued` and it has no attempt with `status = 'running'` and `leaseUntil > now`. A queued run with zero attempts qualifies only when its `createdAt` is older than the lease window. The method runs in one write transaction that locks the binding row, using the existing `lockBinding` pattern (`store.ts:167-174`). For each qualifying run it sets lapsed running attempts to `interrupted` with an end reason naming the expired lease, sets the run to `cancelled`, and appends one `attempt.interrupted` event plus one `RUN_ERROR` event with `code = "STOPPED"`, mirroring the payload convention of `finishAttempt` (`store.ts:897-912`). The invariant holds that every terminal run has exactly one terminal `attempt.*` event whose type agrees with the derived state.
 

@@ -26,6 +26,23 @@ export type ReplayTarget =
   | { kind: "snapshot"; through: number }
   | { kind: "run" | "thread-through-run"; runId: string };
 
+const defaultLeaseMs = 30_000;
+const leaseExpiredReason = "execution lease expired";
+
+function leaseWindowMs(environment: Record<string, string | undefined>) {
+  const raw = environment.OPENBOT_LOCAL_LEASE_MS?.trim();
+  if (!raw) return defaultLeaseMs;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : defaultLeaseMs;
+}
+
+/**
+ * One lease window for both the runner's default claim lease and crash settlement, so a run a
+ * holder can still renew is never mistaken for a crashed one. `OPENBOT_LOCAL_LEASE_MS` shortens
+ * both together for crash-journey speed.
+ */
+export const LOCAL_LEASE_MS = leaseWindowMs(process.env);
+
 const replaySnapshot = {
   isolationLevel: "repeatable read",
   accessMode: "read only",
@@ -712,7 +729,105 @@ export function createLocalRuntimeStore(
       return attempt?.stopRequested ?? true;
     },
 
+    async settleLapsedThreadWork(input: {
+      threadId: string;
+      actorId: string;
+      agentId?: string;
+    }): Promise<Array<{ runId: string; attemptId: string }>> {
+      return database.transaction(async (transaction) => {
+        const at = now();
+        const binding = await lockBinding(transaction, input.threadId);
+        if (
+          !binding ||
+          binding.ownerUserId !== input.actorId ||
+          (input.agentId !== undefined && binding.agentId !== input.agentId)
+        ) {
+          throw new LocalRuntimeConflictError("Local thread was not found.");
+        }
+        const candidates = await transaction
+          .select()
+          .from(localRuns)
+          .where(
+            and(
+              eq(localRuns.threadId, input.threadId),
+              inArray(localRuns.status, ["running", "queued"]),
+            ),
+          )
+          .orderBy(asc(localRuns.createdAt));
+        const settled: Array<{ runId: string; attemptId: string }> = [];
+        for (const run of candidates) {
+          const attempts = await transaction
+            .select()
+            .from(localAttempts)
+            .where(eq(localAttempts.runId, run.id))
+            .orderBy(asc(localAttempts.createdAt));
+          if (
+            attempts.some(
+              (attempt) =>
+                attempt.status === "running" && attempt.leaseUntil > at,
+            )
+          ) {
+            continue;
+          }
+          const lapsed = attempts.filter(
+            (attempt) => attempt.status === "running",
+          );
+          // A queued run with no attempt may still be moments from its first claim.
+          if (
+            lapsed.length === 0 &&
+            run.createdAt.getTime() > at.getTime() - LOCAL_LEASE_MS
+          ) {
+            continue;
+          }
+          if (lapsed.length > 0) {
+            await transaction
+              .update(localAttempts)
+              .set({
+                status: "interrupted",
+                endReason: leaseExpiredReason,
+                finishedAt: at,
+              })
+              .where(
+                and(
+                  eq(localAttempts.runId, run.id),
+                  eq(localAttempts.status, "running"),
+                ),
+              );
+          }
+          await transaction
+            .update(localRuns)
+            .set({ status: "cancelled", finishedAt: at })
+            .where(eq(localRuns.id, run.id));
+          const attemptId = lapsed.at(-1)?.id;
+          await appendEvent(transaction, {
+            threadId: input.threadId,
+            runId: run.id,
+            attemptId,
+            type: "RUN_ERROR",
+            payload: {
+              threadId: input.threadId,
+              runId: run.requestKey,
+              code: "STOPPED",
+              message: `Run stopped: ${leaseExpiredReason}.`,
+            },
+            createdAt: at,
+          });
+          await appendEvent(transaction, {
+            threadId: input.threadId,
+            runId: run.id,
+            attemptId,
+            type: "attempt.interrupted",
+            payload: { reason: leaseExpiredReason },
+            createdAt: at,
+          });
+          if (attemptId) settled.push({ runId: run.id, attemptId });
+        }
+        return settled;
+      });
+    },
+
     async openThreadReplay(scope: ThreadScope): Promise<ReplayTarget> {
+      await this.settleLapsedThreadWork(scope);
       return database.transaction(async (tx) => {
         const binding = await scopedBinding(tx, scope);
         const [active] = await tx
@@ -950,6 +1065,7 @@ export function createLocalRuntimeStore(
       actorId: string;
       agentId?: string;
     }) {
+      await this.settleLapsedThreadWork(input);
       return database.transaction(
         async (transaction) => {
           const [binding] = await transaction
