@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import { currentApprovalContext } from "@openbot/toolkit/continuation";
 import { cutAtCodeUnits } from "../channels/text";
 
 /**
@@ -455,29 +456,84 @@ export type McpCallResult = {
 };
 
 /**
+ * The connector trace: one structured line per physical `callTool`, emitted after the reply whether
+ * the call succeeded, the vendor reported its own failure, or nothing answered at all.
+ *
+ * The identity the line can honestly carry is decided here, at the boundary, and two of the three
+ * obvious ids do not reach it. The local operation id is created inside the recorded-tool wrapper
+ * and never travels below it, and the connection deliberately carries no run identity — `transport`
+ * documents that MCP reads no actor fields off it, and widening it here would contradict that
+ * stance from the one module that holds it. The tool call id DOES reach here: the wrapper enters the
+ * approval continuation context around every recorded execute, and the id in it is the same one
+ * `local_operations` records, so a trace consumer joins the trace to the operation rows on it. A
+ * call that arrives outside any recorded turn carries no id, and the line says so by omitting the
+ * field rather than by guessing one.
+ *
+ * WHAT THE LINE MAY NEVER CARRY. Arguments, however tempting for debugging: a connector's arguments
+ * are somebody's document, and a trace saved as evidence is read by more people than the operator
+ * who saved it. The token, for the same reason with less need to say so. The URL and the tool name
+ * are the server's own identity at this boundary, which is how the consumer filters one server's
+ * calls out of the trace without this module having to know any server's name.
+ */
+function traceCall(
+  connection: Pick<Connection, "url">,
+  toolName: string,
+  outcome: "succeeded" | "failed",
+): void {
+  const toolCallId = currentApprovalContext()?.toolCallId;
+  console.info(
+    JSON.stringify({
+      type: "mcp-call",
+      server: connection.url,
+      tool: toolName,
+      ...(toolCallId ? { toolCallId } : {}),
+      outcome,
+    }),
+  );
+}
+
+/**
  * Call one tool.
  *
  * Whether the call was permitted is not decided here. This function's only job is to speak the
  * protocol; the grant and the policy are settled before anything reaches it. Keeping the two apart
  * means the permission check cannot be accidentally satisfied by a code path that also happens to
  * make the call.
+ *
+ * The trace wraps the attempt rather than sitting inside it, so a call that died at the handshake
+ * leaves a line behind it too. A failure the trace cannot see is a physical call an evidence run
+ * cannot count, and the count is the whole reason the line exists.
  */
 export async function callTool(
   connection: Connection,
   toolName: string,
   args: Record<string, unknown>,
 ): Promise<McpCallResult> {
-  return withClient(connection, async (client) => {
-    const result = await client.callTool(
-      { name: toolName, arguments: args },
-      undefined,
-      { timeout: CALL_TIMEOUT_MS },
-    );
+  try {
+    const { text, isError, truncated } = await withClient(
+      connection,
+      async (client) => {
+        const result = await client.callTool(
+          { name: toolName, arguments: args },
+          undefined,
+          { timeout: CALL_TIMEOUT_MS },
+        );
 
-    const { text, truncated } = resultText(
-      result.content,
-      "structuredContent" in result ? result.structuredContent : undefined,
+        const rendered = resultText(
+          result.content,
+          "structuredContent" in result ? result.structuredContent : undefined,
+        );
+        return {
+          text: rendered.text,
+          isError: result.isError === true,
+          truncated: rendered.truncated,
+        };
+      },
     );
-    return { text, isError: result.isError === true, truncated };
-  });
+    traceCall(connection, toolName, isError ? "failed" : "succeeded");
+    return { text, isError, truncated };
+  } catch (error) {
+    traceCall(connection, toolName, "failed");
+    throw error;
+  }
 }
