@@ -19,6 +19,7 @@ Put a new document in the first directory that matches what it answers:
 | A reader asking | Goes in |
 | --- | --- |
 | What is the plan, what is done, why this design | `docs/aooo/plan.md` |
+| What is the detailed design of a unit before it is built | `docs/aooo/designs/` |
 | What did a unit prove, what did it measure | `docs/aooo/evidence/` |
 | What input does the acceptance case use | `tests/fixtures/aooo/` |
 | How do I run, configure, or understand this project | `docs/` or `CONTRIBUTING.md` |
