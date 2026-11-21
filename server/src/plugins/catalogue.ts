@@ -385,27 +385,52 @@ export const CATALOGUE: readonly CatalogueEntry[] = Object.freeze([
      * The writing tools as the hosted server advertises them today. The hosted server advertises
      * its tools, so a name here that does not match an advertised tool is not the risk — an
      * advertised tool that is missing from this list is: {@link classifyTool} reads an unlisted
-     * but advertised name as a read, never as a write. Notion's MCP listing carries no per-action
-     * effect, so this list is the only thing that can say otherwise and nothing backstops it. That
-     * makes under-inclusion the failure mode, so this list has to lean over-inclusive rather than
-     * minimal, and reconciling it against the live tool list on the first Refresh tools is
-     * required, not cosmetic.
+     * but advertised name as a read, never as a write. The live listing declares a write effect on
+     * only some of its tools (15 as of the 2026-11-21 refresh), and a tool with no declared
+     * effect is not thereby a read, so this list stays the classification authority and has to
+     * lean over-inclusive rather than minimal. Reconciling it against the live tool list on every
+     * Refresh tools is required, not cosmetic: the preflight surfaces a vendor-declared write
+     * this list omits, and the coverage guard fails when the two disagree in either direction.
      */
     writeTools: Object.freeze([
+      "notion-calendar-cancel-events",
+      "notion-calendar-create-events",
+      "notion-calendar-update-events",
+      "notion-complete-mcp-setup",
       "notion-convert-page-to-skill",
+      "notion-convert-to-meetings-database",
       "notion-create-attachment",
       "notion-create-comment",
       "notion-create-database",
       "notion-create-file-upload",
       "notion-create-folder",
+      "notion-create-meeting-note",
       "notion-create-pages",
+      "notion-create-suggested-edit",
       "notion-create-view",
+      "notion-delete-comment",
+      "notion-delete-databases",
+      "notion-delete-pages",
       "notion-duplicate-page",
+      "notion-link-meeting-note-to-calendar-event",
       "notion-move-pages",
+      "notion-resolve-suggested-edit",
+      "notion-restore-pages",
+      "notion-restore-version",
+      "notion-send-message-to-session",
+      "notion-set-comment-reaction",
+      "notion-set-discussion-resolved",
+      "notion-spawn-session",
+      "notion-stop-session",
+      "notion-update-comment",
       "notion-update-data-source",
       "notion-update-folder",
       "notion-update-page",
+      "notion-update-page-favorites",
+      "notion-update-sidebar-tabs",
+      "notion-update-skill-settings",
       "notion-update-view",
+      "notion-upload-skill",
     ]),
     docsUrl: "https://developers.notion.com/guides/mcp/build-mcp-client",
   },
