@@ -19,6 +19,7 @@ import {
   localRuns,
   localThreadBindings,
 } from "../db/schema";
+import { foldHistoryMessages } from "./history-fold";
 
 type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 type ThreadScope = { threadId: string; actorId: string; agentId: string };
@@ -1115,7 +1116,16 @@ export function createLocalRuntimeStore(
                   .orderBy(asc(localOperations.createdAt)),
               ])
             : [[], []];
-          return { binding, events, messages, runs, attempts, operations };
+          // The message rows with the thread's recorded tool events folded in, so the projection
+          // restores tool turns no `local_messages` column holds. Pure over the rows just read.
+          return {
+            binding,
+            events,
+            messages: foldHistoryMessages(messages, events),
+            runs,
+            attempts,
+            operations,
+          };
         },
         { isolationLevel: "repeatable read", accessMode: "read only" },
       );

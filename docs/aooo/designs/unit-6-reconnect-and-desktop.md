@@ -58,6 +58,8 @@ The signature the channel already calls (`app/src/components/channels/channel-ch
 
 The `/bot` page needs no new restore path. The packaged chat already rebuilds its transcript from the `agent/connect` replay, which unit 5 made work. The mode branch therefore exists in exactly one function, and the SDK's private `ɵsupportsLocalThreadEndpoints` contract is never touched.
 
+As built, the runner persists only text and input content as message rows (`server/src/local-runtime/runner.ts:329-389`). A tool call lives in the recorded event stream (`TOOL_CALL_START`, `TOOL_CALL_ARGS`, `TOOL_CALL_END`, `TOOL_CALL_RESULT` in `local_events`) and never reaches `local_messages`, whose schema has no tool columns (`server/src/db/schema/local-runtime.ts:123-136`). The projection alone would restore text without tool turns, which the acceptance bullet for restored tool turns forbids. `readHistory` therefore folds the recorded tool events into the message projection at read time. A call becomes the `{id, name, args}` dialect attached to the row its `parentMessageId` names, or a new assistant row when no row holds it. A result becomes a tool row carrying its `toolCallId`. The fold reads only existing tables, so the unit still adds no table, no column, and no event type. `readableTurns` already translates that dialect (`thread-messages.ts:117-152`), and `projectedTurn` passes a folded row's `toolCalls` through to it.
+
 ### Run status, one derivation
 
 ```ts
