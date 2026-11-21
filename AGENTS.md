@@ -32,11 +32,27 @@ already covers. If none of these rows fits, ask before creating a path.
 `.local/` and `.logs/` are not tracked. This repository is public, so no credential, token,
 session, personal note, or unredacted customer data goes into a tracked file.
 
+## Unit design docs
+
+Before a unit's implementation starts, its design doc under `docs/aooo/designs/` settles the
+following points.
+
+- The real call path, with the contract at each boundary.
+- Which record is authoritative and which is a rebuildable projection.
+- The state transitions for stop, timeout, and late results.
+- How external schemas and tool listings are refreshed and verified, not assumed.
+- What each acceptance layer proves and does not prove.
+- Which existing gates the change reaches.
+
+Keep a design doc free of incident references and counts. State the rules. The evidence for the
+rules stays where it was recorded.
+
 ## Boundaries
 
 - Do not modify frozen input under `tests/fixtures/aooo/`. Changing an input changes what the
   acceptance run proves.
 - Do not write a completion record before its checks have run. Record passed, failed, and not run
   separately; a passing startup check is not acceptance.
-- Commit stage-one work to `feat/local-bot-workbench` and open one pull request to `aooo/main`
-  after stage-one acceptance. Do not merge earlier.
+- Run each plan segment on its own feature branch, created from `aooo/main`. Open one pull request
+  per segment to `aooo/main` after the segment passes its acceptance. Do not merge the pull
+  request before that acceptance.

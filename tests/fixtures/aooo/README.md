@@ -1,4 +1,4 @@
-# Stage-one acceptance case
+# aooo acceptance case
 
 This is a fictional, fixed compatibility case for exercising a real model and a real Notion
 connection. Alder Client and Compass are not product claims. The source text is intentionally short
@@ -31,8 +31,8 @@ boundary. It does not claim that a Bot completed the live workflow.
 1. Use Bun 1.4.3, the version pinned in the root `package.json`, and install with
    `bun install --frozen-lockfile`. Use an isolated PostgreSQL database for this deployment and a
    separate `TEST_DATABASE_URL` for integration tests. Follow `docs/development.md` for Docker and
-   `bash scripts/start.sh`. The inherited OpenBot stack still needs Intelligence configuration;
-   running without it belongs to a later stage-one work unit, not this fixture setup.
+   `bash scripts/start.sh`. Set `OPENBOT_RUNTIME_MODE=local` to run the stack without Intelligence
+   credentials. See `docs/configuration.md` for the mode.
 2. Configure one real model through the existing provider settings. Keep model keys, database URLs,
    session cookies, and OAuth credentials in the ignored `.env` or local environment, never in this
    directory. Record the model name and relevant configuration names in local run notes, without
@@ -44,8 +44,9 @@ boundary. It does not claim that a Bot completed the live workflow.
    the independent test page with that Notion connection. Do not use the implementation plan as the
    writable target.
 4. Create or reset the independent Notion test page to `initial-page.md` before a run. Keep its URL
-   in `.local/aooo-pr1-test-page.md` (ignored by Git). Save a read-back of the initial page there or
-   beside it. The checked-in initial copy is the reference for the protected text.
+   in an ignored file under `.local/` (for example `notion-test-page.txt`). Save a read-back of the
+   initial page there or beside it. The checked-in initial copy is the reference for the protected
+   text.
 5. In one Bot thread, provide the two batch-1 files and the test page URL. Ask: "Read the test page
    and these two sources. Update only Compatibility follow-up with Compass compatibility findings,
    cite source IDs, then read the page back and return its link. Do not change protected sections."
@@ -59,8 +60,8 @@ For each live run, retain the thread and page links, model name, start/end times
 the read-back content after each batch, and a pass/fail note per expected fact outside tracked files.
 Do not report an accepted or queued write as success until the page read-back confirms it.
 
-The desktop development shell later needs Rust/Cargo and its own dependencies (`cd desktop && bun
-install`), then `bun run tauri dev` from `desktop/`. It points at a development stack; signing and
-installer acceptance are outside stage one. Record the OS, Bun, Docker, PostgreSQL, Rust/Cargo, model
+The desktop development shell needs Rust/Cargo and its own dependencies (`cd desktop && bun
+install`), then `bun run tauri dev` from `desktop/`. It points at a development stack. Signing and
+installer acceptance are outside this fixture's scope. Record the OS, Bun, Docker, PostgreSQL, Rust/Cargo, model
 configuration, callback origins, and chosen ports in the local run notes so another developer can
 reproduce the environment without sharing credentials.
