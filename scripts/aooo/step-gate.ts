@@ -12,9 +12,9 @@
 //   typecheck      `bun run --filter '*' typecheck` across the root workspaces.
 //   tests-tsc      `bun scripts/typecheck-tests.ts`, against the frozen error baseline.
 //   lint           `biome lint --error-on-warnings` over the whole repository.
-//   format         `biome format` over tracked plus untracked-not-ignored files only. The
-//                  repository-wide `bun run format:check` is currently red on raw evidence dumps
-//                  under .logs/ (untracked, ignored), so this check scopes biome away from them.
+//   format         `biome format` over the whole repository. The raw directories .logs/,
+//                  .demo-logs/, and .local/ are excluded in biome.json, so the check covers
+//                  tracked source plus a step's new files and never the ignored dumps.
 //   test <file>    `bun test <file>` for every positional argument, in the order given.
 //   files          only with --files: `biome check` over the named files, the import-sort and
 //                  assist rules the whole-repo commands do not gate on. Pass the step's own new
@@ -72,30 +72,13 @@ const missingBiome = biomeFiles.filter(
 if (missingBiome.length > 0)
   bail(`no such --files path(s): ${missingBiome.join(", ")}`);
 
-// Tracked plus untracked-not-ignored files, so the format check covers a step's new files while
-// staying away from the ignored raw logs that make the repository-wide command red.
-const listing = spawnSync(
-  "git",
-  ["ls-files", "-c", "-o", "--exclude-standard"],
-  {
-    cwd: repoRoot,
-    encoding: "utf8",
-  },
-);
-if (listing.status !== 0)
-  bail("git ls-files failed, so the format scope cannot be built.");
-const formatScope = listing.stdout
-  .split("\n")
-  .filter(Boolean)
-  .filter((f) => /\.(js|jsx|ts|tsx|json|jsonc|css|html)$/.test(f));
-
 type Check = { name: string; cmd: string[] };
 
 const checks: Check[] = [
   { name: "typecheck", cmd: ["bun", "run", "--filter", "*", "typecheck"] },
   { name: "tests-tsc", cmd: ["bun", "scripts/typecheck-tests.ts"] },
   { name: "lint", cmd: ["bunx", "biome", "lint", "--error-on-warnings", "."] },
-  { name: "format", cmd: ["bunx", "biome", "format", ...formatScope] },
+  { name: "format", cmd: ["bunx", "biome", "format", "."] },
   ...tests.map((t) => ({ name: `test ${t}`, cmd: ["bun", "test", t] })),
 ];
 if (biomeFiles.length > 0) {
