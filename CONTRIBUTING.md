@@ -46,7 +46,13 @@ known limitations for the final pull request.
 
 After a segment passes its acceptance, open the segment's pull request in `PulseInjector/aooo-bot`
 with the feature branch as head and `aooo/main` as base. Use the repository's existing pull request
-template.
+template. Answer the template's questions even when the answer is that nothing applies.
+
+File issues through the repository's issue templates. A defect uses the bug report form with the
+`[BUG]` prefix and the `bug` label. Plan-aligned work uses the feature request form with the
+`[FEATURE]` prefix and the `enhancement` label. Fill every field, even when the answer is that
+nothing applies. The repository refuses blank issues in the web UI. An issue created through the
+API or the command line follows the same forms.
 Address review feedback on the feature branch, and merge only after applicable checks and review are
 complete.
 
