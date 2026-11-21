@@ -1,11 +1,11 @@
 ---
 name: verify-aooo
-description: Run isolated acceptance tests for the aooo bot stage-one local workbench and prepare repeatable checks for later units; use when implementing or verifying work in docs/aooo/plan.md.
+description: Run isolated acceptance tests for the aooo bot local workbench and prepare repeatable checks for new units; use when implementing or verifying work in docs/aooo/plan.md.
 ---
 
 # Verify aooo bot
 
-Use this skill to reuse the stage-one verification setup. The plan remains the authority for what a unit must prove. This skill owns only the repeatable test environment, run record, and cleanup; it does not turn one unit's fixture test into another unit's acceptance.
+Use this skill to reuse the project's verification setup. The plan remains the authority for what a unit must prove. This skill owns only the repeatable test environment, run record, and cleanup; it does not turn one unit's fixture test into another unit's acceptance.
 
 ## Launch
 
@@ -60,6 +60,6 @@ The executable helper is `scripts/verify-aooo`; run it through `bun run verify:a
 
 ## Why this design
 
-The existing Unit 5 HTTP test already owns its two server processes, fixture model, and MCP fixture. A one-shot wrapper owns only PostgreSQL, migration, the test process, and evidence. A persistent stack would add ports, stale-state handling, and leaked-process risk without helping this test. Unit 6's browser journey exists at `server/tests/local-runtime-browser-reconnect.integration.test.ts`; it is registered in the feature map with its evidence outputs, and it reuses this runner for its isolated database. Unit 7's real Notion write remains explicit live acceptance.
+The default HTTP journey already owns its two server processes, fixture model, and MCP fixture. A one-shot wrapper owns only PostgreSQL, migration, the test process, and evidence. A persistent stack would add ports, stale-state handling, and leaked-process risk without helping this test. The browser-reconnect journey lives at `server/tests/local-runtime-browser-reconnect.integration.test.ts`. The feature map registers it with its evidence outputs, and it reuses this runner for its isolated database. A real Notion write remains explicit live acceptance.
 
 For ongoing map maintenance after routes or journeys change, use `/maintain-verification-skill`.
