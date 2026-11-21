@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Ask } from "./Ask";
 import { DatabaseReset } from "./DatabaseReset";
@@ -75,6 +76,168 @@ const MANAGED_INTELLIGENCE_GATEWAY_WS_URL =
  * field, so neither can be the only one that has it.
  */
 const SUGGESTED_QUESTION = "What is 17 times 23?";
+
+const DEFAULT_LOCAL_WORKBENCH_URL = "http://localhost:3010";
+const LOCAL_WORKBENCH_WINDOW_LABEL = "local-workbench";
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+export type LocalWorkbenchUrl =
+  | { kind: "ok"; origin: string }
+  | { kind: "problem"; problem: Problem };
+
+export function parseLocalWorkbenchUrl(value: string): LocalWorkbenchUrl {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return {
+      kind: "problem",
+      problem: { said: "Enter the address of a local workbench." },
+    };
+  }
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return {
+      kind: "problem",
+      problem: {
+        said: "That is not a web address. Use an address like http://localhost:3010.",
+      },
+    };
+  }
+  if (url.protocol !== "http:") {
+    return {
+      kind: "problem",
+      problem: {
+        said:
+          url.protocol === "https:"
+            ? "A local workbench uses http://, not https://."
+            : "A local workbench address must start with http://.",
+      },
+    };
+  }
+  if (url.username || url.password) {
+    return {
+      kind: "problem",
+      problem: {
+        said: "A local workbench address cannot include a username or password.",
+      },
+    };
+  }
+  if (!LOOPBACK_HOSTS.has(url.hostname)) {
+    return {
+      kind: "problem",
+      problem: {
+        said: `${url.hostname || "That host"} is not this computer. Use localhost, 127.0.0.1, or [::1].`,
+      },
+    };
+  }
+  if (!url.port) {
+    return {
+      kind: "problem",
+      problem: {
+        said: "A local workbench address needs a port, like http://localhost:3010.",
+      },
+    };
+  }
+  if (url.pathname !== "/" && url.pathname !== "") {
+    return {
+      kind: "problem",
+      problem: { said: "A local workbench address cannot include a path." },
+    };
+  }
+  if (url.search) {
+    return {
+      kind: "problem",
+      problem: { said: "A local workbench address cannot include a query." },
+    };
+  }
+  if (url.hash) {
+    return {
+      kind: "problem",
+      problem: { said: "A local workbench address cannot include a fragment." },
+    };
+  }
+  return { kind: "ok", origin: url.origin };
+}
+
+export type LocalWorkbenchCapabilities =
+  | { kind: "ok" }
+  | { kind: "problem"; problem: Problem };
+
+function shownAnswer(value: unknown): string {
+  if (value === undefined) return "nothing";
+  if (typeof value === "string") return value;
+  return JSON.stringify(value) ?? String(value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function parseLocalWorkbenchCapabilities(
+  body: unknown,
+): LocalWorkbenchCapabilities {
+  if (!isRecord(body)) {
+    return {
+      kind: "problem",
+      problem: {
+        said: `The address answered with ${shownAnswer(body)}, which is not a local workbench.`,
+      },
+    };
+  }
+  if (body.product !== "openbot") {
+    return {
+      kind: "problem",
+      problem: {
+        said: `The address is not OpenBot. It answered with product ${shownAnswer(body.product)}.`,
+      },
+    };
+  }
+  if (body.mode !== "local") {
+    return {
+      kind: "problem",
+      problem: {
+        said: `The address is not a local workbench. It answered with mode ${shownAnswer(body.mode)}.`,
+      },
+    };
+  }
+  if (body.durableHistory !== true) {
+    return {
+      kind: "problem",
+      problem: {
+        said: `The address does not keep durable history. It answered with durableHistory ${shownAnswer(body.durableHistory)}.`,
+      },
+    };
+  }
+  return { kind: "ok" };
+}
+
+async function probeLocalWorkbench(origin: string): Promise<Problem | null> {
+  let response: Response;
+  try {
+    response = await fetch(`${origin}/api/capabilities`, {
+      headers: { Accept: "application/json" },
+    });
+  } catch (error) {
+    return {
+      said: `OpenBot could not reach ${origin}.`,
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (!response.ok) {
+    return {
+      said: `The address answered ${response.status}, not a local workbench.`,
+    };
+  }
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    return { said: "The address answered with something that is not JSON." };
+  }
+  const capabilities = parseLocalWorkbenchCapabilities(body);
+  return capabilities.kind === "ok" ? null : capabilities.problem;
+}
 
 export function App() {
   const [engine, setEngine] = useState<EngineStatus | null>(null);
@@ -239,6 +402,11 @@ export function App() {
   }
 
   const [step, setStep] = useState<SetupStep>("welcome");
+  const [localWorkbenchUrl, setLocalWorkbenchUrl] = useState(
+    DEFAULT_LOCAL_WORKBENCH_URL,
+  );
+  const [connectingToLocalWorkbench, setConnectingToLocalWorkbench] =
+    useState(false);
   const [apiUrl, setApiUrl] = useState(MANAGED_INTELLIGENCE_API_URL);
   const [wsUrl, setWsUrl] = useState(MANAGED_INTELLIGENCE_GATEWAY_WS_URL);
   const [steps, setSteps] = useState<Progress[]>([]);
@@ -516,6 +684,39 @@ export function App() {
     };
   }, [loadConfiguredRoot, recoverFromStart]);
 
+  async function connectToLocalWorkbench() {
+    const parsed = parseLocalWorkbenchUrl(localWorkbenchUrl);
+    if (parsed.kind === "problem") {
+      setFailure(parsed.problem);
+      return;
+    }
+    setFailure(null);
+    setConnectingToLocalWorkbench(true);
+    try {
+      const problem = await probeLocalWorkbench(parsed.origin);
+      if (problem) {
+        setFailure(problem);
+        return;
+      }
+      const workbench = new WebviewWindow(LOCAL_WORKBENCH_WINDOW_LABEL, {
+        url: parsed.origin,
+        title: "OpenBot",
+        width: 900,
+        height: 640,
+        minWidth: 720,
+        minHeight: 560,
+        resizable: true,
+      });
+      void workbench.once("tauri://error", (event) => {
+        setFailure(asProblem(event.payload));
+      });
+    } catch (error) {
+      setFailure(asProblem(error));
+    } finally {
+      setConnectingToLocalWorkbench(false);
+    }
+  }
+
   async function install() {
     if (busy || !root.trim()) return;
     setBusy(true);
@@ -743,6 +944,47 @@ export function App() {
     return (
       <main>
         <Welcome onStart={() => setStep("harness")} />
+        <section
+          className="sheet"
+          style={{ marginTop: "1.5rem" }}
+          aria-labelledby="local-workbench-title"
+        >
+          <h2 id="local-workbench-title">Local workbench</h2>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              void connectToLocalWorkbench();
+            }}
+          >
+            <div className="field">
+              <label htmlFor="local-workbench-url">
+                Local workbench address
+              </label>
+              <input
+                id="local-workbench-url"
+                value={localWorkbenchUrl}
+                disabled={connectingToLocalWorkbench}
+                onChange={(event) => {
+                  setLocalWorkbenchUrl(event.target.value);
+                  setFailure(null);
+                }}
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </div>
+            <div className="row">
+              <button
+                type="submit"
+                className="quiet"
+                disabled={connectingToLocalWorkbench}
+              >
+                {connectingToLocalWorkbench
+                  ? "Checking the workbench…"
+                  : "Connect to a local workbench"}
+              </button>
+            </div>
+          </form>
+        </section>
         {displayedFailure && <Failure problem={displayedFailure} />}
       </main>
     );
