@@ -46,7 +46,17 @@ const exportAfter = (batch: "afterBatch1" | "afterBatch2"): string =>
 
 const threadId = "thread-1";
 const actorId = "user-1";
-const runIds = { batch1: "run-batch-1", batch2: "run-batch-2" } as const;
+/*
+ * The post-fix channel topology (issue #6): one message is several runs. The announce run ends on
+ * the model's tool call, the continuation run carries the executed result back and holds the write.
+ * So each batch is a set of runs, and the judge scopes by set, never by a single run id.
+ */
+const runIds = {
+  batch1Read: "run-batch-1-read",
+  batch1Write: "run-batch-1-write",
+  batch2Read: "run-batch-2-read",
+  batch2Write: "run-batch-2-write",
+} as const;
 
 const runRow = (id: string, createdAt: string) => ({
   id,
@@ -67,7 +77,7 @@ const attemptRow = (runId: string, createdAt: string) => ({
   id: `attempt-${runId}`,
   runId,
   threadId,
-  generation: runId === runIds.batch1 ? 1 : 2,
+  generation: runId.startsWith("run-batch-1") ? 1 : 2,
   owner: "local-runtime",
   leaseUntil: createdAt,
   status: "succeeded",
@@ -80,7 +90,9 @@ const attemptRow = (runId: string, createdAt: string) => ({
 const operationRow = (
   runId: string,
   toolCallId: string,
-  toolName: "notion-fetch" | "notion-update-page",
+  toolName:
+    | "mcp__notion__notion-fetch"
+    | "mcp__notion__notion-update-page",
 ) => ({
   id: `operation-${toolCallId}`,
   threadId,
@@ -88,7 +100,7 @@ const operationRow = (
   attemptId: `attempt-${runId}`,
   toolCallId,
   toolName,
-  target: toolName === "notion-update-page" ? "compass-alder page" : null,
+  target: toolName.endsWith("update-page") ? "compass-alder page" : null,
   parameters: {},
   actorId,
   dispatched: true,
@@ -116,10 +128,23 @@ const eventRow = (
   createdAt: "2026-11-21T10:00:00.000Z",
 });
 
-const chainOperations = (runId: string) => [
-  operationRow(runId, `call-${runId}-fetch-1`, "notion-fetch"),
-  operationRow(runId, `call-${runId}-update`, "notion-update-page"),
-  operationRow(runId, `call-${runId}-fetch-2`, "notion-fetch"),
+/*
+ * The chain's real shape: the announce run reads the page, the continuation run writes it once
+ * and reads it back. Exactly like the live run the evidence record holds. The recorded
+ * `tool_name` carries the granted (server-prefixed) spelling; the trace's `tool` field carries
+ * the vendor spelling — both are pinned here, because a judge that only knew one would count
+ * zero writes on the other's evidence.
+ */
+const readOperations = (runId: string) => [
+  operationRow(runId, `call-${runId}-fetch-1`, "mcp__notion__notion-fetch"),
+];
+const writeOperations = (runId: string) => [
+  operationRow(
+    runId,
+    `call-${runId}-update`,
+    "mcp__notion__notion-update-page",
+  ),
+  operationRow(runId, `call-${runId}-fetch-2`, "mcp__notion__notion-fetch"),
 ];
 
 const runEvents = (runId: string, from: number) => [
@@ -167,31 +192,52 @@ const historyBody = (
   operations,
 });
 
+const batch1Runs = [
+  runRow(runIds.batch1Read, "2026-11-21T10:00:00.000Z"),
+  runRow(runIds.batch1Write, "2026-11-21T10:00:10.000Z"),
+];
+const batch2NewRuns = [
+  runRow(runIds.batch2Read, "2026-11-21T11:00:00.000Z"),
+  runRow(runIds.batch2Write, "2026-11-21T11:00:10.000Z"),
+];
 const batch1History = historyBody(
-  [runRow(runIds.batch1, "2026-11-21T10:00:00.000Z")],
-  chainOperations(runIds.batch1),
-  runEvents(runIds.batch1, 1),
+  batch1Runs,
+  [...readOperations(runIds.batch1Read), ...writeOperations(runIds.batch1Write)],
+  [...runEvents(runIds.batch1Read, 1), ...runEvents(runIds.batch1Write, 6)],
 );
 const batch2History = historyBody(
+  [...batch1Runs, ...batch2NewRuns],
   [
-    runRow(runIds.batch1, "2026-11-21T10:00:00.000Z"),
-    runRow(runIds.batch2, "2026-11-21T11:00:00.000Z"),
+    ...readOperations(runIds.batch1Read),
+    ...writeOperations(runIds.batch1Write),
+    ...readOperations(runIds.batch2Read),
+    ...writeOperations(runIds.batch2Write),
   ],
-  [...chainOperations(runIds.batch1), ...chainOperations(runIds.batch2)],
-  [...runEvents(runIds.batch1, 1), ...runEvents(runIds.batch2, 6)],
+  [
+    ...runEvents(runIds.batch1Read, 1),
+    ...runEvents(runIds.batch1Write, 6),
+    ...runEvents(runIds.batch2Read, 11),
+    ...runEvents(runIds.batch2Write, 16),
+  ],
 );
 
-const traceLine = (tool: string, toolCallId?: string): string =>
+const traceLine = (
+  tool: string,
+  toolCallId?: string,
+  outcome: "succeeded" | "failed" = "succeeded",
+): string =>
   JSON.stringify({
     type: "mcp-call",
     server: "https://mcp.notion.com/mcp",
     tool,
     ...(toolCallId === undefined ? {} : { toolCallId }),
-    outcome: "succeeded",
+    outcome,
   });
 
-const chainTrace = (runId: string): string[] => [
+const readTrace = (runId: string): string[] => [
   traceLine("notion-fetch", `call-${runId}-fetch-1`),
+];
+const writeTrace = (runId: string): string[] => [
   traceLine("notion-update-page", `call-${runId}-update`),
   traceLine("notion-fetch", `call-${runId}-fetch-2`),
 ];
@@ -200,8 +246,10 @@ const chainTrace = (runId: string): string[] => [
 // connector that the Notion check must ignore.
 const passingTrace = [
   "[2026-11-21T09:59:00Z] local runtime listening on port 3000",
-  ...chainTrace(runIds.batch1),
-  ...chainTrace(runIds.batch2),
+  ...readTrace(runIds.batch1Read),
+  ...writeTrace(runIds.batch1Write),
+  ...readTrace(runIds.batch2Read),
+  ...writeTrace(runIds.batch2Write),
   JSON.stringify({
     type: "mcp-call",
     server: "https://mcp.example.com/mcp",
@@ -241,43 +289,141 @@ const failingBatch2Export = initialPage
   )
   .replace("Owner: Integration team.", "Owner: The Bot.");
 
+/*
+ * What a real Notion read-back looks like: the page the model wrote renders back with <code> for
+ * inline code and escaped square brackets, while the frozen case fixes its excerpts in the
+ * source's own markdown. The judge has to compare through that rendering or no live run can ever
+ * carry its evidence verbatim.
+ */
+const notionRendered = (markdown: string): string =>
+  markdown
+    .replace(/`([^`]*)`/g, "<code>$1</code>")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]");
+
+/*
+ * What a compliant run may still write: a provenance note that NAMES the mirror to say it is a
+ * copy — the duplicate rule forbids citing the mirror as a source, not mentioning what it is.
+ */
+const proseMirrorNote = (markdown: string): string =>
+  markdown.replace(
+    "## Owner notes (protected)",
+    "Source note: REL-25-MIRROR is a byte-identical copy of REL-25 and is cited under the single source ID REL-25. It is one source, not a second independent change.\n\n## Owner notes (protected)",
+  );
+
+/*
+ * A synthesis paragraph may reuse a short technical token the sources introduced; that is not a
+ * second entry. The mirror could only build a second entry by repeating its byte-identical
+ * sentences, which the long excerpts cover.
+ */
+const synthesisRepeatingShortToken = (markdown: string): string =>
+  markdown.replace(
+    "## Owner notes (protected)",
+    "Synthesis: on 2.5 `createClient` rejects the legacy setting with `UNSUPPORTED_RETRY_MODE`, so production must migrate.\n\n## Owner notes (protected)",
+  );
+
 type EvidenceOverrides = {
   batch2Export?: string;
   batch2Operations?: Array<ReturnType<typeof operationRow>>;
   extraTraceLines?: string[];
+  /** The batch-1 file names a run the batch-2 file does not open with: not the same thread. */
+  batch1RunsFromAnotherThread?: boolean;
+  /** The batch-2 file holds no run beyond the batch-1 runs: the second message never ran. */
+  batch2AddsNoRuns?: boolean;
+  /** Both page exports are written as a real Notion read-back renders them. */
+  notionRenderedExports?: boolean;
+  /** The batch-2 body carries a prose note naming the mirror as a copy, not citing it. */
+  batch2ProseMirrorNote?: boolean;
+  /** The batch-2 synthesis paragraph reuses the short `UNSUPPORTED_RETRY_MODE` token. */
+  batch2SynthesisRepeatsShortToken?: boolean;
+  /** The batch-2 run first attempted a write the vendor rejected, then wrote successfully. */
+  batch2RejectedWriteAttempt?: boolean;
 };
 
 function writeEvidenceDirectory(overrides: EvidenceOverrides = {}): string {
   const dir = mkdtempSync(join(tmpdir(), "live-check-"));
+  const renderIfAsked = (text: string): string =>
+    overrides.notionRenderedExports ? notionRendered(text) : text;
   writeFileSync(
     join(dir, "page-export-batch-1.md"),
-    exportAfter("afterBatch1"),
+    renderIfAsked(exportAfter("afterBatch1")),
   );
   writeFileSync(
     join(dir, "page-export-batch-2.md"),
-    overrides.batch2Export ?? exportAfter("afterBatch2"),
+    renderIfAsked(
+      overrides.batch2ProseMirrorNote
+        ? proseMirrorNote(exportAfter("afterBatch2"))
+        : overrides.batch2SynthesisRepeatsShortToken
+          ? synthesisRepeatingShortToken(exportAfter("afterBatch2"))
+          : (overrides.batch2Export ?? exportAfter("afterBatch2")),
+    ),
   );
+  const savedBatch1History = overrides.batch1RunsFromAnotherThread
+    ? {
+        ...batch1History,
+        runs: batch1History.runs.map((run, index) =>
+          index === 0 ? { ...run, id: "run-from-another-thread" } : run,
+        ),
+      }
+    : batch1History;
   writeFileSync(
     join(dir, "history-batch-1.json"),
-    JSON.stringify(batch1History, null, 2),
+    JSON.stringify(savedBatch1History, null, 2),
   );
+  const savedBatch2History = overrides.batch2AddsNoRuns
+    ? {
+        ...batch2History,
+        runs: batch2History.runs.slice(0, batch1Runs.length),
+        operations: batch2History.operations.filter((operation) =>
+          batch1Runs.some((run) => operation.runId === run.id),
+        ),
+        events: batch2History.events.filter((event) =>
+          event.runId === null
+            ? true
+            : batch1Runs.some((run) => event.runId === run.id),
+        ),
+      }
+    : batch2History;
+  const rejectedAttemptOperations = overrides.batch2RejectedWriteAttempt
+    ? [
+        operationRow(
+          runIds.batch2Write,
+          "call-run-batch-2-write-update-rejected",
+          "mcp__notion__notion-update-page",
+        ),
+      ]
+    : [];
   writeFileSync(
     join(dir, "history-batch-2.json"),
     JSON.stringify(
       {
-        ...batch2History,
+        ...savedBatch2History,
         operations: [
-          ...batch2History.operations,
+          ...savedBatch2History.operations,
           ...(overrides.batch2Operations ?? []),
+          ...rejectedAttemptOperations,
         ],
       },
       null,
       2,
     ),
   );
+  const rejectedAttemptTrace = overrides.batch2RejectedWriteAttempt
+    ? [
+        traceLine(
+          "notion-update-page",
+          "call-run-batch-2-write-update-rejected",
+          "failed",
+        ),
+      ]
+    : [];
   writeFileSync(
     join(dir, "connector-trace.log"),
-    [passingTrace, ...(overrides.extraTraceLines ?? [])].join("\n"),
+    [
+      passingTrace,
+      ...rejectedAttemptTrace,
+      ...(overrides.extraTraceLines ?? []),
+    ].join("\n"),
   );
   return dir;
 }
@@ -325,12 +471,17 @@ describe("live-check against synthetic evidence directories", () => {
         "each REL-25 excerpt appears once in the batch-2 read-back",
       );
       expect(stdout).toContain(
-        "batch-1 history run run-batch-1: exactly 1 notion-update-page operation",
+        "batch-1 history: exactly 1 notion-update-page operation physically wrote across its 2 runs.",
       );
       expect(stdout).toContain(
-        "batch-2 run run-batch-2: exactly 1 notion-update-page operation",
+        "batch-2 history: exactly 1 notion-update-page operation physically wrote across the 2 runs the second message added.",
       );
-      expect(stdout).toContain("exactly 1 physical mutation");
+      expect(stdout).toContain(
+        "batch-1 runs: exactly 1 physical mutation (notion-update-page, tool call id call-run-batch-1-write-update).",
+      );
+      expect(stdout).toContain(
+        "batch-2 runs: exactly 1 physical mutation (notion-update-page, tool call id call-run-batch-2-write-update).",
+      );
       expect(stdout).toContain("model.usage present");
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -342,13 +493,13 @@ describe("live-check against synthetic evidence directories", () => {
       batch2Export: failingBatch2Export,
       batch2Operations: [
         operationRow(
-          runIds.batch2,
-          "call-run-batch-2-update-2",
-          "notion-update-page",
+          runIds.batch2Write,
+          "call-run-batch-2-write-update-2",
+          "mcp__notion__notion-update-page",
         ),
       ],
       extraTraceLines: [
-        traceLine("notion-update-page", "call-run-batch-2-update-2"),
+        traceLine("notion-update-page", "call-run-batch-2-write-update-2"),
       ],
     });
     try {
@@ -367,7 +518,7 @@ describe("live-check against synthetic evidence directories", () => {
       );
       expect(stdout).toContain("protected paragraph 1 is not intact");
       expect(stdout).toContain(
-        "batch-2 run run-batch-2: 2 notion-update-page operations, expected exactly 1",
+        "batch-2 history: 2 notion-update-page operations physically wrote across the 2 runs the second message added, expected exactly 1.",
       );
       expect(stdout).toContain("wrote more than once");
     } finally {
@@ -391,6 +542,95 @@ describe("live-check against synthetic evidence directories", () => {
       );
       expect(stdout).not.toContain("VERDICT: PASS");
       expect(stdout).not.toContain("VERDICT: FAIL");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("histories from two different threads fail the identity check", async () => {
+    const dir = writeEvidenceDirectory({
+      batch1RunsFromAnotherThread: true,
+    });
+    try {
+      const { exitCode, stdout } = await runLiveCheck(dir);
+      expect(exitCode).toBe(1);
+      expect(stdout).toContain("VERDICT: FAIL");
+      expect(stdout).toContain(
+        "are not the batch-2 history's opening runs; the two files are not the same thread read at two moments.",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a batch-2 history with no run beyond the batch-1 runs fails", async () => {
+    const dir = writeEvidenceDirectory({
+      batch2AddsNoRuns: true,
+    });
+    try {
+      const { exitCode, stdout } = await runLiveCheck(dir);
+      expect(exitCode).toBe(1);
+      expect(stdout).toContain("VERDICT: FAIL");
+      expect(stdout).toContain(
+        "the batch-2 history holds no run beyond the batch-1 runs; the second message never ran in this thread.",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a Notion-rendered read-back still carries its excerpts verbatim", async () => {
+    const dir = writeEvidenceDirectory({ notionRenderedExports: true });
+    try {
+      const { exitCode, stdout } = await runLiveCheck(dir);
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("VERDICT: PASS");
+      expect(stdout).not.toContain("FAIL");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a vendor-rejected write attempt is a note, not a second write", async () => {
+    const dir = writeEvidenceDirectory({ batch2RejectedWriteAttempt: true });
+    try {
+      const { exitCode, stdout } = await runLiveCheck(dir);
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("VERDICT: PASS");
+      expect(stdout).toContain(
+        "a physical notion-update-page failed (tool call id call-run-batch-2-write-update-rejected)",
+      );
+      expect(stdout).not.toContain("FAIL");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a prose note naming the mirror as a copy is not a mirror citation", async () => {
+    const dir = writeEvidenceDirectory({ batch2ProseMirrorNote: true });
+    try {
+      const { exitCode, stdout } = await runLiveCheck(dir);
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("VERDICT: PASS");
+      expect(stdout).toContain(
+        "no REL-25-MIRROR citation in the batch-2 read-back.",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a synthesis paragraph reusing a short token is not a second entry", async () => {
+    const dir = writeEvidenceDirectory({
+      batch2SynthesisRepeatsShortToken: true,
+    });
+    try {
+      const { exitCode, stdout } = await runLiveCheck(dir);
+      expect(exitCode).toBe(0);
+      expect(stdout).toContain("VERDICT: PASS");
+      expect(stdout).toContain(
+        "each REL-25 excerpt appears once in the batch-2 read-back",
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

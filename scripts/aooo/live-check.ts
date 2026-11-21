@@ -38,15 +38,38 @@ import { fileURLToPath } from "node:url";
 const EDITABLE_HEADING = "## Compatibility follow-up (Bot editable)";
 
 /*
- * The chain's tools, as the model is offered them (`GrantedTool.name`, which is also what
- * `local_operations.tool_name` records). The trace's `tool` field carries the same spelling,
- * because the physical callTool sits under the same wrapper. `reads` is a plain string list so
- * membership checks accept any advertised name, not just the ones spelled here.
+ * The chain's tools under both spellings the records carry. The trace's `tool` field holds the
+ * vendor name (`notion-update-page`), because the physical callTool sits under that name, while
+ * `local_operations.tool_name` holds the granted name the model is offered
+ * (`mcp__notion__notion-update-page`, the server-prefixed form). A judge that knew only one
+ * spelling counted zero writes on the other's evidence, which the first live judged run proved.
+ * `reads` is a plain string list so membership checks accept any advertised name.
  */
-const CHAIN: { reads: readonly string[]; update: string } = {
+const CHAIN: {
+  reads: readonly string[];
+  update: string;
+  updateOperationNames: readonly string[];
+} = {
   reads: ["notion-fetch"],
   update: "notion-update-page",
+  updateOperationNames: [
+    "notion-update-page",
+    "mcp__notion__notion-update-page",
+  ],
 };
+
+/*
+ * What a saved read-back carries: the page the model wrote, as Notion renders it back — inline
+ * code as <code>, escaped square brackets — while the frozen case fixes its excerpts in the
+ * source's own markdown. Both sides are canonicalized to one plain form before any inclusion
+ * test, so the source's words still have to appear contiguously; only their markup does not.
+ */
+const canonicalize = (text: string): string =>
+  text
+    .replace(/<\/?code>/g, "`")
+    .replace(/<\/?b>/g, "")
+    .replace(/\\([[\]])/g, "$1")
+    .replace(/\s+/g, " ");
 
 /*
  * The parse guards below read only the fields the check uses and fail the whole parse when any of
@@ -407,6 +430,7 @@ export function buildLiveCheckReport(input: LiveCheckInput): LiveCheckReport {
   };
   for (const batch of [1, 2] as const) {
     const body = sectionOf(batch);
+    const plain = body === null ? null : canonicalize(body);
     for (const fact of factsByBatch[batch]) {
       if (body === null) {
         add(
@@ -418,14 +442,14 @@ export function buildLiveCheckReport(input: LiveCheckInput): LiveCheckReport {
       const cited = [...new Set(fact.evidence.map((entry) => entry.sourceId))];
       const misses: string[] = [];
       for (const evidence of fact.evidence) {
-        if (!body.includes(evidence.quote)) {
+        if (!plain.includes(canonicalize(evidence.quote))) {
           misses.push(
             `the ${evidence.sourceId} excerpt "${shorten(evidence.quote)}" is absent`,
           );
         }
       }
       for (const sourceId of cited) {
-        if (!citedIn(body, sourceId)) {
+        if (!citedIn(plain, sourceId)) {
           misses.push(`source ${sourceId} is not cited`);
         }
       }
@@ -478,7 +502,20 @@ export function buildLiveCheckReport(input: LiveCheckInput): LiveCheckReport {
         "the duplicate rule cannot be checked: the batch-2 page export has no single Bot-editable section.",
       );
     } else {
-      if (body.includes(duplicate.id)) {
+      /*
+       * Cited, not merely named: the duplicate rule forbids building a finding on the mirror, and
+       * the corpus's citation forms are the bracketed id and the parenthetical sources list. A
+       * prose note that names the mirror to say it is a copy is compliance stated out loud, not a
+       * second source — and any second entry the note might hide is caught by the repeat check
+       * below regardless, because a mirror entry repeats the canonical excerpt word for word.
+       */
+      const idPattern = duplicate.id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const cited = (plain: string): boolean =>
+        new RegExp(`\\[[^\\]]*${idPattern}[^\\]]*\\]`).test(plain) ||
+        new RegExp(`\\([^)]*sources?[^)]*${idPattern}[^)]*\\)`, "i").test(
+          plain,
+        );
+      if (cited(canonicalize(body))) {
         add(
           "fail",
           `the batch-2 read-back carries a ${duplicate.id} citation, so the mirror was treated as its own source.`,
@@ -489,12 +526,20 @@ export function buildLiveCheckReport(input: LiveCheckInput): LiveCheckReport {
       /*
        * A second entry for the canonical source shows up as its excerpt carried twice: the mirror
        * is byte-identical, so a finding built from it repeats the canonical quote word for word.
+       * Short tokens are exempt: a synthesis paragraph reusing a term the sources introduced
+       * (`UNSUPPORTED_RETRY_MODE`) is ordinary prose, and a mirror-built entry necessarily repeats
+       * the source's sentences, which every long excerpt still covers.
        */
+      const MIN_ENTRY_EXCERPT = 40;
       let repeated = false;
       for (const fact of factsByBatch[2]) {
         for (const evidence of fact.evidence) {
           if (evidence.sourceId !== duplicate.duplicateOf) continue;
-          const occurrences = countOccurrences(body, evidence.quote);
+          if (canonicalize(evidence.quote).length < MIN_ENTRY_EXCERPT) continue;
+          const occurrences = countOccurrences(
+            canonicalize(body),
+            canonicalize(evidence.quote),
+          );
           if (occurrences > 1) {
             repeated = true;
             add(
@@ -516,61 +561,18 @@ export function buildLiveCheckReport(input: LiveCheckInput): LiveCheckReport {
   const updateOperations = (history: HistoryRows, runId: string) =>
     history.operations.filter(
       (operation) =>
-        operation.runId === runId && operation.toolName === CHAIN.update,
+        operation.runId === runId &&
+        CHAIN.updateOperationNames.includes(operation.toolName),
     );
-
-  const batch1Runs = input.batch1History.runs;
-  const batch2Runs = input.batch2History.runs;
-  if (batch1Runs.length !== 1) {
-    add(
-      "fail",
-      `the batch-1 history holds ${batch1Runs.length} runs; the case drives one thread once, so it must hold exactly the batch-1 run.`,
-    );
-  }
-  if (batch2Runs.length !== 2) {
-    add(
-      "fail",
-      `the batch-2 history holds ${batch2Runs.length} runs; the case drives one thread twice, so it must hold exactly the batch-1 and batch-2 runs.`,
-    );
-  }
-  const sameThread =
-    batch1Runs.length === 1 &&
-    batch2Runs.length === 2 &&
-    batch1Runs[0].id === batch2Runs[0].id;
-  if (batch1Runs.length === 1 && batch2Runs.length === 2 && !sameThread) {
-    add(
-      "fail",
-      `the batch-1 history's run ${batch1Runs[0].id} is not the batch-2 history's first run ${batch2Runs[0].id}; the two files are not the same thread read at two moments.`,
-    );
-  }
-
-  if (batch1Runs.length === 1) {
-    const run = batch1Runs[0];
-    const count = updateOperations(input.batch1History, run.id).length;
-    add(
-      count === 1 ? "pass" : "fail",
-      count === 1
-        ? `batch-1 history run ${run.id}: exactly 1 ${CHAIN.update} operation.`
-        : `batch-1 history run ${run.id}: ${count} ${CHAIN.update} operations, expected exactly 1.`,
-    );
-  }
-  if (sameThread) {
-    for (const [index, run] of batch2Runs.entries()) {
-      const count = updateOperations(input.batch2History, run.id).length;
-      add(
-        count === 1 ? "pass" : "fail",
-        count === 1
-          ? `batch-${index + 1} run ${run.id}: exactly 1 ${CHAIN.update} operation.`
-          : `batch-${index + 1} run ${run.id}: ${count} ${CHAIN.update} operations, expected exactly 1.`,
-      );
-    }
-  }
 
   /*
    * The trace line carries no run identity: the join to a run is the tool call id, the same id
    * `local_operations` records. The line names its server by URL, which is how one server's calls
    * are filtered out of a shared log; the tool-name prefix catches a connection whose URL no
-   * longer names the vendor.
+   * longer names the vendor. Computed before the operation counts, because whether a recorded
+   * update operation wrote is a fact only the physical trace can state: the product records a
+   * vendor-rejected attempt as a completed call (the error text is the result the model reads),
+   * so the recorded row alone cannot tell a write from a refusal.
    */
   const notionTrace = input.trace.filter(
     (line) =>
@@ -582,6 +584,74 @@ export function buildLiveCheckReport(input: LiveCheckInput): LiveCheckReport {
       "fail",
       "the connector trace holds no call to the Notion server, so no physical write can be counted.",
     );
+  }
+  const physicallyWrote = (toolCallId: string): boolean =>
+    notionTrace.some(
+      (line) =>
+        line.tool === CHAIN.update &&
+        line.toolCallId === toolCallId &&
+        line.outcome === "succeeded",
+    );
+
+  /*
+   * The post-fix channel topology (issue #6): one message is several runs — the announce run that
+   * ends on the model's tool call and the continuation run that carries the executed result back.
+   * So a batch is a SET of runs, never one run id, and the thread identity is the prefix: the
+   * batch-1 file must hold the first message's runs, and the batch-2 file must open with exactly
+   * those runs and then add the second message's. The prefix proves the two files are the same
+   * thread read at two moments, which is all the old exact-count check ever guaranteed.
+   */
+  const batch1Runs = input.batch1History.runs;
+  const batch2Runs = input.batch2History.runs;
+  if (batch1Runs.length === 0) {
+    add(
+      "fail",
+      "the batch-1 history holds no run; the case drives the thread, so the first message never ran.",
+    );
+  }
+  const sameThread =
+    batch1Runs.length >= 1 &&
+    batch2Runs.length >= batch1Runs.length &&
+    batch1Runs.every((run, index) => run.id === batch2Runs[index]?.id);
+  if (batch1Runs.length >= 1 && !sameThread) {
+    add(
+      "fail",
+      `the batch-1 history's runs are not the batch-2 history's opening runs; the two files are not the same thread read at two moments.`,
+    );
+  }
+  const batch2NewRuns = sameThread
+    ? batch2Runs.slice(batch1Runs.length)
+    : [];
+  if (sameThread && batch2NewRuns.length === 0) {
+    add(
+      "fail",
+      "the batch-2 history holds no run beyond the batch-1 runs; the second message never ran in this thread.",
+    );
+  }
+
+  const updatesOf = (history: HistoryRows, runs: HistoryRun[]) =>
+    runs.flatMap((run) => updateOperations(history, run.id));
+  if (sameThread && batch1Runs.length >= 1) {
+    const batch1Writes = updatesOf(input.batch1History, batch1Runs).filter(
+      (operation) => physicallyWrote(operation.toolCallId),
+    );
+    add(
+      batch1Writes.length === 1 ? "pass" : "fail",
+      batch1Writes.length === 1
+        ? `batch-1 history: exactly 1 ${CHAIN.update} operation physically wrote across its ${batch1Runs.length} runs.`
+        : `batch-1 history: ${batch1Writes.length} ${CHAIN.update} operations physically wrote across its ${batch1Runs.length} runs, expected exactly 1.`,
+    );
+    if (batch2NewRuns.length >= 1) {
+      const batch2Writes = updatesOf(input.batch2History, batch2NewRuns).filter(
+        (operation) => physicallyWrote(operation.toolCallId),
+      );
+      add(
+        batch2Writes.length === 1 ? "pass" : "fail",
+        batch2Writes.length === 1
+          ? `batch-2 history: exactly 1 ${CHAIN.update} operation physically wrote across the ${batch2NewRuns.length} runs the second message added.`
+          : `batch-2 history: ${batch2Writes.length} ${CHAIN.update} operations physically wrote across the ${batch2NewRuns.length} runs the second message added, expected exactly 1.`,
+      );
+    }
   }
 
   const operationsByCallId = new Map<string, string>();
@@ -637,27 +707,32 @@ export function buildLiveCheckReport(input: LiveCheckInput): LiveCheckReport {
   }
 
   if (sameThread) {
-    for (const [index, run] of batch2Runs.entries()) {
-      const mutations = mutationsByRun.get(run.id) ?? [];
+    const mutationsOf = (runs: HistoryRun[]) =>
+      runs.flatMap((run) => mutationsByRun.get(run.id) ?? []);
+    const batches = [
+      { label: "batch-1 runs", name: "batch-1", runs: batch1Runs },
+      { label: "batch-2 runs", name: "batch-2", runs: batch2NewRuns },
+    ] as const;
+    for (const { label, runs } of batches) {
+      if (runs.length === 0) continue;
+      const mutations = mutationsOf(runs);
       if (mutations.length === 1) {
         add(
           "pass",
-          `batch-${index + 1} run ${run.id}: exactly 1 physical mutation (${CHAIN.update}, tool call id ${mutations[0].toolCallId}).`,
+          `${label}: exactly 1 physical mutation (${CHAIN.update}, tool call id ${mutations[0].toolCallId}).`,
         );
       } else if (mutations.length === 0) {
         add(
           "fail",
-          `batch-${index + 1} run ${run.id}: no physical ${CHAIN.update} succeeded in the trace, so the recorded write cannot be confirmed.`,
+          `${label}: no physical ${CHAIN.update} succeeded in the trace, so the recorded write cannot be confirmed.`,
         );
       } else {
         add(
           "fail",
-          `batch-${index + 1} run ${run.id}: ${mutations.length} physical ${CHAIN.update} calls succeeded, so the batch wrote more than once.`,
+          `${label}: ${mutations.length} physical ${CHAIN.update} calls succeeded, so the batch wrote more than once.`,
         );
       }
-    }
-    for (const run of batch2Runs) {
-      for (const operation of updateOperations(input.batch2History, run.id)) {
+      for (const operation of updatesOf(input.batch2History, runs)) {
         const traced = notionTrace.some(
           (line) =>
             line.tool === CHAIN.update &&
@@ -666,7 +741,7 @@ export function buildLiveCheckReport(input: LiveCheckInput): LiveCheckReport {
         if (!traced) {
           add(
             "fail",
-            `run ${run.id} records a ${CHAIN.update} operation (tool call id ${operation.toolCallId}) with no physical call in the trace; the trace saved is not the whole run.`,
+            `${label}: a recorded ${CHAIN.update} operation (tool call id ${operation.toolCallId}) has no physical call in the trace; the trace saved is not the whole run.`,
           );
         }
       }
@@ -676,16 +751,18 @@ export function buildLiveCheckReport(input: LiveCheckInput): LiveCheckReport {
      * Reported, never a verdict: the design accepts the event's absence when the locked SDK
      * exposes no usage, and only the operator knows which of the two she is looking at.
      */
-    for (const [index, run] of batch2Runs.entries()) {
-      const usage = input.batch2History.events.find(
-        (event) => event.type === "model.usage" && event.runId === run.id,
-      );
-      add(
-        "note",
-        usage
-          ? `batch-${index + 1} run ${run.id}: model.usage present (${usageSummary(usage.payload)}).`
-          : `batch-${index + 1} run ${run.id}: no model.usage event; honest only if the locked SDK exposed no usage.`,
-      );
+    for (const { name, runs } of batches) {
+      for (const run of runs) {
+        const usage = input.batch2History.events.find(
+          (event) => event.type === "model.usage" && event.runId === run.id,
+        );
+        add(
+          "note",
+          usage
+            ? `${name} run ${run.id}: model.usage present (${usageSummary(usage.payload)}).`
+            : `${name} run ${run.id}: no model.usage event; honest only if the locked SDK exposed no usage.`,
+        );
+      }
     }
   }
 
