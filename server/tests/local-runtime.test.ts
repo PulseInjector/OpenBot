@@ -145,7 +145,12 @@ test("ordinary connect replays from zero even if a sequence header is present", 
   expect(fake.cursors).toEqual([0]);
 });
 
-function historyRoutes(options?: { allowed?: boolean; agentId?: string }) {
+function historyRoutes(options?: {
+  allowed?: boolean;
+  agentId?: string;
+  runs?: Array<Record<string, unknown>>;
+  events?: Array<Record<string, unknown>>;
+}) {
   const actorRecord: AppVariables["actor"] = {
     id: "person-1",
     email: "person@example.test",
@@ -170,7 +175,8 @@ function historyRoutes(options?: { allowed?: boolean; agentId?: string }) {
       historyReads += 1;
       return {
         binding: { agentId: options?.agentId ?? "bot-1" },
-        events: [],
+        events: options?.events ?? [],
+        runs: options?.runs ?? [],
       };
     },
     readEventsAfter: async () => {
@@ -188,14 +194,39 @@ function historyRoutes(options?: { allowed?: boolean; agentId?: string }) {
   };
 }
 
-test("history and events require access to the bound Bot", async () => {
+test("history, events, and status require access to the bound Bot", async () => {
   const { app, reads } = historyRoutes({ allowed: false });
   const history = await app.request("/threads/thread-1/history");
   const events = await app.request("/threads/thread-1/events");
+  const status = await app.request("/threads/thread-1/status");
 
   expect(history.status).toBe(404);
   expect(events.status).toBe(404);
-  expect(reads()).toEqual({ bindingReads: 2, historyReads: 0, eventReads: 0 });
+  expect(status.status).toBe(404);
+  expect(reads()).toEqual({ bindingReads: 3, historyReads: 0, eventReads: 0 });
+});
+
+test("status returns the derivation over the newest run of the bound thread", async () => {
+  const { app } = historyRoutes({
+    runs: [{ id: "run-9", status: "succeeded", error: null }],
+    events: [{ runId: "run-9", type: "attempt.succeeded", payload: {} }],
+  });
+  const response = await app.request("/threads/thread-1/status");
+
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({
+    status: { phase: "succeeded", runId: "run-9" },
+  });
+});
+
+test("a disagreeing stored pair surfaces as the app's own failure, not a not-found", async () => {
+  const { app } = historyRoutes({
+    runs: [{ id: "run-9", status: "succeeded", error: null }],
+    events: [{ runId: "run-9", type: "attempt.failed", payload: {} }],
+  });
+  const response = await app.request("/threads/thread-1/status");
+
+  expect(response.status).toBe(500);
 });
 
 test("event history validates the cursor before reading", async () => {
