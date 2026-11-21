@@ -10,6 +10,11 @@ import {
   PROVENANCE_GUIDANCE,
 } from "@openbot/shared/bot-prompt";
 import { defaultModelFor } from "@openbot/shared/model-providers";
+import type { GrantedTool } from "@openbot/toolkit/granted-tool";
+import type {
+  ToolOperationIntent,
+  ToolOperationRecorder,
+} from "@openbot/toolkit/tool-operation";
 import { EMPTY, lastValueFrom } from "rxjs";
 import { z } from "zod";
 import { createActorAgentResolver } from "../src/agents/agent-resolver";
@@ -2668,5 +2673,104 @@ describe("where an attachment reaches the model, and where it deliberately does 
       (messages[4] as { content?: { source?: unknown }[] }).content?.[0]
         ?.source,
     ).toMatchObject({ type: "data" });
+  });
+});
+
+/**
+ * The record of a built-in tool call must say what the tool actually received.
+ *
+ * `executeRecordedTool` parses the raw model arguments once, records the parsed object as the
+ * operation intent, and hands execution the result of that parse. The wrapper in
+ * `builtInAgentConfiguration` used to execute the raw arguments instead, so any default the schema
+ * filled or value it coerced made the recorded intent and the executed call diverge, and the
+ * operation rows are what a live run's write-count evidence is judged from.
+ */
+describe("the recorded intent of a built-in tool call", () => {
+  test("equals the arguments the tool executed, defaults the schema filled included", async () => {
+    const executed: unknown[] = [];
+    const events: string[] = [];
+    const intents: ToolOperationIntent[] = [];
+    const tool: GrantedTool = {
+      name: "notion-update-page",
+      description: "Update one page's compatibility follow-up area.",
+      ref: "notion/update-page",
+      parameters: z.object({
+        pageId: z.string(),
+        section: z.string().default("compatibility-follow-up"),
+      }),
+      execute: async (args) => {
+        executed.push(args);
+        return "written";
+      },
+    };
+    const recorder: ToolOperationRecorder = {
+      async authorize() {
+        events.push("authorize");
+      },
+      async begin(intent) {
+        intents.push(intent);
+        events.push("intent");
+        return intent.toolCallId;
+      },
+      async dispatch() {
+        events.push("dispatched");
+      },
+      async settle(_operationId, outcome) {
+        events.push(outcome);
+      },
+    };
+
+    const configuration = builtInAgentConfiguration(
+      {
+        id: "general-assistant",
+        name: "General Assistant",
+        type: "built_in",
+        systemPrompt: "Be helpful.",
+      },
+      { provider: "openai", defaultModel: "gpt-5.6-terra" },
+      "openai-secret",
+      [tool],
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      recorder,
+    );
+    const wrapped = (
+      configuration as {
+        tools?: Array<{
+          execute: (
+            args: unknown,
+            execution?: { toolCallId?: string },
+          ) => Promise<unknown>;
+        }>;
+      }
+    ).tools?.[0];
+    if (!wrapped) throw new Error("Expected the wrapped tool");
+
+    // Raw model arguments: no `section`, so the schema is what fills it.
+    await wrapped.execute({ pageId: "page-1" }, { toolCallId: "call-1" });
+
+    const intent = intents[0];
+    if (!intent) throw new Error("Expected the recorded operation intent");
+
+    expect(
+      executed[0],
+      `the arguments the tool executed (${JSON.stringify(executed[0])}) must equal the recorded intent (${JSON.stringify(intent.parameters)})`,
+    ).toEqual(intent.parameters);
+    expect(executed[0]).toEqual({
+      pageId: "page-1",
+      section: "compatibility-follow-up",
+    });
+    // Authorization runs twice by design (unit 4): before the intent is recorded and again
+    // immediately before dispatch, so a stop that lands between them is honored.
+    expect(events).toEqual([
+      "authorize",
+      "intent",
+      "authorize",
+      "dispatched",
+      "succeeded",
+    ]);
   });
 });
