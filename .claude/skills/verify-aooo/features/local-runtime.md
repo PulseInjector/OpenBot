@@ -6,7 +6,7 @@ The local runtime accepts authenticated work, records ordered history, prevents 
 
 - `run-once`: one client run ID produces one durable result.
 - `auth-scope`: untrusted identity headers and another owner's session cannot read or run the thread.
-- `stop-replay`: reconnect sees the original event history and Stop settles an already-dispatched operation without admitting another one.
+- `stop-replay`: reconnect replays the original run's wire events — only the `RUN_STARTED`..`RUN_FINISHED`/`RUN_ERROR` envelopes reach the AG-UI client (commit `192236cc`; the bookkeeping rows stay in the log for `/history` and `/events`) — and Stop settles an already-dispatched operation without admitting another one. The wire half of that contract is pinned by the wire-protocol guard registered in [reconnect.md](./reconnect.md).
 
 ## How to get to it (user POV)
 
