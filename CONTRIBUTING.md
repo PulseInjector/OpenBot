@@ -13,11 +13,10 @@ Use `aooo/main` as the fork's integration baseline. It starts at the OpenBot com
 aooo bot implementation plan. Do not use the upstream `main` as the base for aooo bot work unless the
 project explicitly decides to update its upstream baseline.
 
-Stage one is integrated on `feat/local-bot-workbench`, created from `aooo/main`. Make each logical
-change as a focused commit on that feature branch, in dependency order. Push the branch as work
-progresses. After the complete local Bot workbench passes stage-one acceptance, open one pull request
-from `feat/local-bot-workbench` to `aooo/main`. Do not merge stage-one work into `aooo/main` before
-that acceptance.
+Integrate each plan segment on its own feature branch, created from `aooo/main`. Make each logical
+change as a focused commit on that branch, in dependency order. Push the branch as work progresses.
+After the segment passes its acceptance, open one pull request from that branch to `aooo/main`. Do
+not merge the pull request before that acceptance.
 
 Check the working tree before starting. When a separate branch is needed, use a short lowercase name
 with a purpose prefix such as `feat/`, `fix/`, `docs/`, or `chore/`. Name the behavior or artifact, not
@@ -45,8 +44,9 @@ known limitations for the final pull request.
 
 ## Share and Review
 
-After stage-one acceptance, open the single pull request in `PulseInjector/aooo-bot` with head
-`feat/local-bot-workbench` and base `aooo/main`. Use the repository's existing pull request template.
+After a segment passes its acceptance, open the segment's pull request in `PulseInjector/aooo-bot`
+with the feature branch as head and `aooo/main` as base. Use the repository's existing pull request
+template.
 Address review feedback on the feature branch, and merge only after applicable checks and review are
 complete.
 

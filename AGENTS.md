@@ -38,5 +38,6 @@ session, personal note, or unredacted customer data goes into a tracked file.
   acceptance run proves.
 - Do not write a completion record before its checks have run. Record passed, failed, and not run
   separately; a passing startup check is not acceptance.
-- Commit stage-one work to `feat/local-bot-workbench` and open one pull request to `aooo/main`
-  after stage-one acceptance. Do not merge earlier.
+- Run each plan segment on its own feature branch, created from `aooo/main`. Open one pull request
+  per segment to `aooo/main` after the segment passes its acceptance. Do not merge the pull
+  request before that acceptance.
