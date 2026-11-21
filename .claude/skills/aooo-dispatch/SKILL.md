@@ -6,8 +6,9 @@ description: Fan out one aooo development step to a fresh subagent with the stan
 # Dispatch one aooo development step
 
 The coordinator owns the design, the review, and the commit. A fresh delegate implements exactly one
-verifiable step. This skill is the shared brief: the recipe, the verification contract, and the
-do-not-touch fences in one artifact, so every dispatch carries them without being rewritten by hand.
+verifiable step. This file is the shared contract: every dispatch cites it and then states only the
+step's own scope. The dispatch and this file together form the complete brief. Nothing in a step's
+scope may weaken a rule here; a step may only narrow its own fence further.
 
 ## The step
 
@@ -17,19 +18,15 @@ when the order allows, and tier the hardest shapes to the strongest model. The n
 usually depends on what the previous step landed, so a step does not start until its predecessor is
 committed.
 
-## The brief
+## The dispatch
 
-Hand the delegate this shape, filled in:
+Every dispatch is short: it cites this file, then states three things and nothing else.
 
 1. **Goal.** One sentence.
-2. **Contract.** Quote the design file's section verbatim (path plus heading). The delegate
-   implements the contract, never a paraphrase of it.
+2. **Contract.** The design file's path plus the heading of the step's section. The delegate reads
+   only that section and whatever it explicitly references, never the whole file. Where any other
+   instruction, instinct, or existing code disagrees with that section, the section wins.
 3. **Scope.** The exact files to create or edit. Anything else is out of scope.
-4. **Fences.** The list below, verbatim.
-5. **Verification.** The gate command below with the step's own test files, run by the delegate
-   before reporting back. Paste the table; do not smooth over a failure.
-6. **Report.** Deviations and judgment calls surfaced explicitly, each with the reason. Do not
-   commit; the coordinator reviews, reruns the gate, and commits.
 
 ## The fences
 
@@ -43,6 +40,7 @@ Hand the delegate this shape, filled in:
 - A reviewed list (for example the Notion `writeTools`) is a human decision. Surface a gap; never
   extend a list to make a check pass.
 - A bug fix lands its failing test first, red, then the fix.
+- Do not commit, create branches, or push. The coordinator reviews, reruns the gate, and commits.
 
 ## The verification contract
 
@@ -52,14 +50,17 @@ bun scripts/aooo/step-gate.ts <test files...> --files <the step's new or edited 
 
 The gate runs the workspace typecheck, the frozen-baseline test typecheck, lint, format, and each
 named test file; `--files` adds the import-sort and assist rules over the step's own files;
-`--journey` adds the isolated acceptance runner; `--note` appends the result line to
-`.local/dev-log.md`. The delegate pastes the table with the report. The coordinator reruns the same
-command independently before committing: the gate's table is shared evidence, not a substitute for
-the review.
+`--journey` adds the isolated acceptance runner. The delegate runs it before reporting back.
+
+## The report
+
+An implementation report returns: the files created and modified; the gate's table; every command
+run with its actual result, and never a command that was not run; each deviation from the contract
+section with its reason; every genuine design choice made and why; anything unresolved.
 
 ## The coordinator loop
 
-1. Read the delegate's whole diff against the quoted contract, not the summary.
+1. Read the delegate's whole diff against the contract section, not the summary.
 2. Verify every contested claim in source yourself before accepting it.
 3. Rerun the gate yourself with the same arguments, with `--note` to record the result.
 4. Commit when the diff matches the contract and the gate is green. Record accepted deviations in
