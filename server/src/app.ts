@@ -183,6 +183,14 @@ export const UPLOAD_BODY_LIMIT_BYTES =
   MAX_IMAGE_BYTES + MULTIPART_FRAMING_ALLOWANCE;
 
 /**
+ * What /api/capabilities names this product by. The startup script's identity probe and the desktop
+ * shell grep for it, because a mode alone does not tell this server from an unrelated listener that
+ * happens to answer 200 on the same port. A constant rather than a setting: no deployment of this
+ * product is ever not this product.
+ */
+const OPENBOT_PRODUCT_MARKER = "openbot";
+
+/**
  * One row for something an administrator did to somebody's access.
  *
  * The address is on the row rather than only the user id, because the id means nothing to a person
@@ -474,6 +482,7 @@ export function createApp(
     context.json({
       mode: config.runtime.mode,
       durableHistory: config.runtime.durableHistory,
+      product: OPENBOT_PRODUCT_MARKER,
       /*
        * Whether a Bot may answer with an interface it wrote itself.
        *
