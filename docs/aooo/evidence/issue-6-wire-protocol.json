@@ -1,0 +1,79 @@
+{
+  "issue": "https://github.com/PulseInjector/aooo-bot/issues/6",
+  "title": "Local run ends succeeded after an announced computer_navigate call that produces no result",
+  "recorded": "2026-11-21",
+  "summary": "A channel run announced one surface-owned tool call (computer_navigate), produced no tool result, recorded no operation, and finished succeeded. Root cause: the local runtime replayed its durable bookkeeping and projection rows (MESSAGES_SNAPSHOT, STATE_SNAPSHOT, message.upsert, run.queued, attempt.*, model.usage) to the AG-UI client as protocol events, before the run's RUN_STARTED. The client's verifier rejects a run stream whose first event is not RUN_STARTED or RUN_ERROR, so every local live run died in the browser at its first event. Server-side execution never noticed: the notion tools of the three earlier runs execute in the server process, so their turns completed regardless. The first run whose model chose a browser tool surfaced the dead half: the announced call never reached the surface, nothing executed it, no follow-up run started, and the attempt recorded succeeded.",
+  "reproduction": {
+    "method": "Same deployment and stack as the reported run (local mode, deepseek/deepseek-v4.1-flash via the local gateway), a fresh channel, one message inviting a browser action.",
+    "prompt": "Please open https://example.com in your browser and tell me the page title.",
+    "runId": "f0dde7e2-fa09-431d-ab62-bc68f51dae98",
+    "observed": {
+      "localEvents": [
+        "run.queued", "attempt.started", "MESSAGES_SNAPSHOT", "STATE_SNAPSHOT",
+        "message.upsert", "RUN_STARTED", "TEXT_MESSAGE_START", "TEXT_MESSAGE_CONTENT",
+        "TEXT_MESSAGE_END", "TOOL_CALL_START computer_navigate", "TOOL_CALL_ARGS",
+        "TOOL_CALL_END", "RUN_FINISHED", "model.usage", "attempt.succeeded"
+      ],
+      "toolCallResultEvents": 0,
+      "localOperationsRows": 0,
+      "attemptStatus": "succeeded",
+      "browserConsole": [
+        "[CopilotKit] Error (agent_run_failed_event): AGUIError: First event must be 'RUN_STARTED'",
+        "Agent execution failed: AGUIError: First event must be 'RUN_STARTED'",
+        "[CopilotKit] Error (agent_run_failed): AGUIError: First event must be 'RUN_STARTED'"
+      ],
+      "transcriptAfterReload": "Tool line 'Opened page example.com — Not completed'; status strip 'Run succeeded'."
+    },
+    "note": "The reported run d5bb3cb0 has the same persisted event shape; its live browser session was not captured, but the stream order is deterministic (prepareInput rows always precede RUN_STARTED), so its browser half failed identically."
+  },
+  "fix": {
+    "where": "server/src/local-runtime/runner.ts, LocalAgentRunner.follow",
+    "what": "The wire replay emits only the agent's own run envelopes: rows outside a RUN_STARTED..RUN_FINISHED/RUN_ERROR envelope (bookkeeping, input projections, usage, verdicts) never reach the AG-UI client. A state machine rather than one pair of bounds, because a connect replay carries several envelopes back to back. Filtered on rows the page has already read, so the polling read's query count and shape are unchanged.",
+    "alternativeRejected": "Bounding the envelope inside the store's readReplayPage with two extra queries per poll. That variant passed the new guard but flipped a timing race in the overlapping-runs Stop test (the lease poll fails closed on any error); it was reverted in favor of the zero-query-delta filter.",
+    "firstPrinciples": "The durable log serves two audiences with different contracts: the history projection (rows of any shape, folded at read time) and the AG-UI wire (protocol-ordered events only). The defect was the conflation; the fix separates them at the presentation boundary rather than by relying on isRecognizedEvent to drop whatever happens to look non-protocol."
+  },
+  "guard": {
+    "file": "server/tests/local-runtime-wire-protocol.integration.test.ts",
+    "whyThisGuard": "Every other local-runtime test asserts on persisted rows; none consumed the stream with the real client, which is why a protocol-invalid stream shipped. The guard drives the served endpoint with the real @copilotkit/core client (the exact package the app's locked React SDK imports) and asserts on what that client accepted.",
+    "redFirst": "On the unfixed tree the guard fails with the production error: AGUIError: First event must be 'RUN_STARTED'; the client owns no tool call.",
+    "greenAfterFix": "2 tests, 4 assertions, 0 failures; the client receives the announced call (TOOL_CALL_START/ARGS/END) and the assistant text; a second test pins the runner's emitted stream to exactly the eight envelope events."
+  },
+  "checks": {
+    "redFirst": "verify-aooo server/tests/local-runtime-wire-protocol.integration.test.ts on the unfixed tree: drive failed with the production error above.",
+    "guard": "verify-aooo server/tests/local-runtime-wire-protocol.integration.test.ts: passed, 2 tests, 4 assertions.",
+    "storeIntegration": "verify-aooo server/tests/local-runtime-store.integration.test.ts: passed twice consecutively, 9 tests, 69 assertions. One test's fixture (bare CUSTOM rows outside any envelope) was updated to the real agent shape: its synthetic events are now wrapped in RUN_STARTED/RUN_FINISHED, and the replay-writer fixture writes the client run id, not the durable run id.",
+    "unitTests": "bun test tests/local-runtime.test.ts: 8 pass. The fake replay store was updated to the real persisted shape (RUN_STARTED, TEXT rows, RUN_FINISHED); the multi-page cursor expectations are unchanged ([0, 103]).",
+    "adjacentIntegration": [
+      "local-runtime-browser-reconnect.integration.test.ts: passed, 1 test, 32 assertions",
+      "local-runtime-history-fold.integration.test.ts: passed, 3 tests, 5 assertions",
+      "local-runtime-summary.integration.test.ts: passed, 4 tests, 12 assertions",
+      "local-runtime-crash-settlement.integration.test.ts: passed, 3 tests, 54 assertions",
+      "local-runtime-model-usage.test.ts: passed"
+    ],
+    "projectionExhaustive": "bun scripts/aooo/projection-exhaustive.ts: 714661 derivation cases and 279620 fold cases, all invariants hold.",
+    "typecheck": "Root server tsc clean; bun run typecheck:tests clean against the baseline.",
+    "notRun": "The full repository suite; desktop acceptance; the Intelligence-mode stack."
+  },
+  "liveAcceptance": {
+    "stack": "Local mode restarted with the fix (server PID started 18:11:42; the previously running 17:22:09 server predates the fix and was replaced after stop.sh left it alive and start.sh reused it).",
+    "prompt": "Please open https://example.org in your browser and tell me the page title.",
+    "run1": {
+      "id": "b7b4c8f0-4609-4a89-ac3c-1a3fcac6b0c6",
+      "shape": "The same persisted shape as the reported run: prepareInput rows, then RUN_STARTED, one line of text, TOOL_CALL_START computer_navigate, RUN_FINISHED; no TOOL_CALL_RESULT; attempt succeeded."
+    },
+    "run2": {
+      "id": "471b1969-2df2-4573-8873-e1e2bd201ecf",
+      "shape": "The continuation the surface opens holding the executed tool's result: RUN_STARTED, answer text, RUN_FINISHED."
+    },
+    "observed": [
+      "The browser console shows no AGUIError for the whole turn.",
+      "The tool tile reads 'Browsed 1 page' (the pre-fix transcript read 'Not completed').",
+      "The computer sidebar shows the live screen and 'The Bot has control'.",
+      "The model's answer quotes the real page: 'The page title is \"Example Domain\" — I read that from the page after opening https://example.org in my browser.'",
+      "The folded thread history holds all four turns: user, assistant intent, tool result {ok:true,...untrusted envelope...}, assistant answer; a reload renders the full transcript.",
+      "local_messages shows the tool result row between the intent and the answer."
+    ],
+    "transient": "A 'Couldn't load earlier messages' notice appeared once mid-turn in both the pre-fix and post-fix sessions; it clears on reload and the durable readback is complete. Recorded as an unexplained transient, not part of this fix."
+  },
+  "expectationNote": "The issue's expectation (an announced call either records a TOOL_CALL_RESULT and a local_operations row, or the run reports a failure) holds for server-executed governed tools. A surface-owned computer call is answered by the surface: the result enters the thread as the continuation run's input and the folded history records it; computer actions are audited by the computer gateway, not local_operations. A run that announces one and ends succeeded is the protocol's mid-turn state, not a failure, provided the surface executes it and the follow-up run follows, which the live acceptance shows."
+}
