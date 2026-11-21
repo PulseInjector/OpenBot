@@ -432,7 +432,7 @@ export function buildLiveCheckReport(input: LiveCheckInput): LiveCheckReport {
     const body = sectionOf(batch);
     const plain = body === null ? null : canonicalize(body);
     for (const fact of factsByBatch[batch]) {
-      if (body === null) {
+      if (plain === null) {
         add(
           "fail",
           `batch-${batch} fact ${fact.id} cannot be verified: the page export has no single Bot-editable section.`,
