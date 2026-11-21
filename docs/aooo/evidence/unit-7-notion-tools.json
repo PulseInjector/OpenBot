@@ -1,6 +1,6 @@
 {
   "server": "notion",
-  "generatedAt": "2026-11-21T08:39:06.609Z",
+  "generatedAt": "2026-11-21T12:20:21.064Z",
   "origin": "written by scripts/aooo/notion-preflight.ts from the plugin store's refreshed listing",
   "reviewedWriteTools": [
     "notion-calendar-cancel-events",
