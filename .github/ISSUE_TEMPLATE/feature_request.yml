@@ -1,0 +1,27 @@
+name: Feature Request
+description: Suggest a new feature or capability for this fork
+title: "[FEATURE] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This fork follows the stage plan in `docs/aooo/plan.md`. Proposals aligned with that plan are
+        prioritized. Bugs in code this fork has not changed belong upstream, in
+        CopilotKit/OpenBot.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem statement
+      description: Why is this needed? The user pain, limitation, or gap today. Not the solution yet.
+      placeholder: "Example: a local-mode run loses pending additions when the desktop app quits mid-run"
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How should it work? Behavior, commands, APIs, inputs and outputs. Reference the plan segment it belongs to.
+    validations:
+      required: true

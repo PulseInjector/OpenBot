@@ -1,0 +1,50 @@
+{
+  "checkedOn": "2026-11-18",
+  "branch": "feat/local-bot-workbench",
+  "database": "isolated PostgreSQL 17.12",
+  "creation": [
+    {
+      "scenario": "lost-response",
+      "botsBefore": 0,
+      "botsAfter": 1,
+      "created": 1,
+      "requestRows": 1,
+      "sameBot": true
+    },
+    {
+      "scenario": "six-concurrent-retries",
+      "created": 1,
+      "uniqueBotIds": 1
+    },
+    {
+      "scenario": "changed-content",
+      "botConflictStatus": 409,
+      "permissionConflictStatus": 409,
+      "requestRows": 1
+    },
+    {
+      "scenario": "dedup-write-failure",
+      "botsAfterFailure": 5,
+      "botsBefore": 5,
+      "requestRowsAfterFailure": 0,
+      "retryCreated": true
+    }
+  ],
+  "grants": [
+    {
+      "scenario": "partial-grant-directory-growth",
+      "confirmed": ["FETCH", "LIST"],
+      "before": [],
+      "afterFailure": ["FETCH"],
+      "afterRetry": ["FETCH", "LIST"],
+      "excluded": ["NEW_READ", "SEND"],
+      "replayWrites": 1,
+      "expandedConfirmationStatus": 409
+    },
+    {
+      "scenario": "grant-committed-response-lost",
+      "grantRows": 1,
+      "grantCallsAcrossRetry": 1
+    }
+  ]
+}

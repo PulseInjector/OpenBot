@@ -55,6 +55,10 @@ SUPERVISOR_PORT="$(setting SUPERVISOR_PORT 4500)"
 # docs/configuration.md tells people to rely on. Read from the environment alone, `false` in `.env`
 # was ignored: the supervisor was still started and the server still told to use it.
 ONE_COMPUTER_EACH="$(setting OPENBOT_ONE_COMPUTER_EACH true)"
+# Read once, exported, so the branches this script takes and the server it launches agree on one
+# mode even when the value came from `.env` rather than the environment.
+RUNTIME_MODE="$(setting OPENBOT_RUNTIME_MODE intelligence)"
+export OPENBOT_RUNTIME_MODE="$RUNTIME_MODE"
 export APP_PORT SERVER_PORT
 SUPERVISOR_TOKEN="$(setting SUPERVISOR_TOKEN openbot-dev-supervisor-token)"
 COMPUTER_TOKEN="$(setting COMPUTER_TOKEN openbot-dev-computer-token)"
@@ -139,6 +143,11 @@ green() { printf '\033[32m%s\033[0m\n' "$1"; }
 red()   { printf '\033[31m%s\033[0m\n' "$1"; }
 info()  { printf '\033[2m%s\033[0m\n' "$1"; }
 
+# What /api/capabilities names this product by. The constant lives in the server's payload
+# (server/src/app.ts); if the two ever disagree, every local-mode probe below refuses a server that
+# is running perfectly.
+OPENBOT_PRODUCT_MARKER="openbot"
+
 # Does whatever holds this port answer as OpenBot, rather than merely answer?
 #
 # `curl -f` proves something is listening and returned 2xx. That is not the same claim, and the gap
@@ -157,8 +166,18 @@ identifies_as_openbot() {
   case "$name" in
     # A field of this server's own payload. A stray 200 does not carry it.
     server)
-      curl -fsS --max-time 3 "http://localhost:$port/api/copilotkit/info" 2>/dev/null \
-        | grep -q '"licenseStatus"'
+      if [ "$RUNTIME_MODE" = "local" ]; then
+        # Local mode has no licence to read, so /api/capabilities stands in for /info. Both the
+        # marker and the mode: this product in Intelligence mode is still the wrong server to keep.
+        local capabilities
+        capabilities="$(curl -fsS --max-time 3 "http://localhost:$port/api/capabilities" 2>/dev/null || true)"
+        [ -n "$capabilities" ] || return 1
+        printf '%s' "$capabilities" | grep -q "\"product\":\"$OPENBOT_PRODUCT_MARKER\"" || return 1
+        printf '%s' "$capabilities" | grep -q '"mode":"local"'
+      else
+        curl -fsS --max-time 3 "http://localhost:$port/api/copilotkit/info" 2>/dev/null \
+          | grep -q '"licenseStatus"'
+      fi
       ;;
     # The app is static HTML with nothing to interrogate, so its title is the identity available.
     app)
@@ -172,6 +191,17 @@ identifies_as_openbot() {
   esac
 }
 
+# The mode a listener on this port declares as this product, or nothing when it does not declare
+# itself as this product at all. Asked only after identification has failed, so a refusal can name
+# WHICH OpenBot holds the port rather than call a server that is one "something that is not OpenBot".
+declared_mode() {
+  local port="$1" capabilities
+  capabilities="$(curl -fsS --max-time 3 "http://localhost:$port/api/capabilities" 2>/dev/null || true)"
+  [ -n "$capabilities" ] || return 0
+  printf '%s' "$capabilities" | grep -q "\"product\":\"$OPENBOT_PRODUCT_MARKER\"" || return 0
+  printf '%s' "$capabilities" | sed -n 's/.*"mode":"\([^"]*\)".*/\1/p'
+}
+
 require_free_or_ours() {
   local port="$1" name="$2" who
   who="$(holder "$port")"
@@ -179,6 +209,17 @@ require_free_or_ours() {
   if identifies_as_openbot "$port" "$name"; then
     info "  $name: already up on $port ($who)"
     return 0
+  fi
+  if [ "$name" = "server" ]; then
+    # The holder may still be this product in the other mode. Named and refused, never killed:
+    # killing is for processes this checkout started, and this one answered as a deployment.
+    local declared
+    declared="$(declared_mode "$port")"
+    if [ -n "$declared" ] && [ "$declared" != "$RUNTIME_MODE" ]; then
+      red "  server: port $port is held by OpenBot in '$declared' mode, and this run is '$RUNTIME_MODE'."
+      red "  Stop it yourself, or start this script with OPENBOT_RUNTIME_MODE=$declared."
+      exit 1
+    fi
   fi
   red "  $name: port $port is held by something that is not OpenBot: $who"
   # `tr`, not `${name^^}`, which is bash 4. macOS ships bash 3.2, where that expansion is a "bad
@@ -402,12 +443,30 @@ else
 fi
 
 info "3/4  Runtime health"
-INFO="$(curl -fsS --max-time 8 "http://localhost:$SERVER_PORT/api/copilotkit/info")"
 # Read with Bun, which every run of this script already needs, rather than python3, which not every
 # machine has. On Windows `python3` is usually the Microsoft Store alias, which prints "Python was not
 # found" and exits 49, so the run stopped here with the server and worker up and the app never
 # started.
-bun run - "$INFO" <<'JS'
+if [ "$RUNTIME_MODE" = "local" ]; then
+  INFO="$(curl -fsS --max-time 8 "http://localhost:$SERVER_PORT/api/copilotkit/info")"
+  CAPABILITIES="$(curl -fsS --max-time 8 "http://localhost:$SERVER_PORT/api/capabilities")"
+  bun run - "$INFO" "$CAPABILITIES" <<'JS'
+const info = JSON.parse(process.argv[2]);
+const capabilities = JSON.parse(process.argv[3]);
+if (capabilities.mode !== "local" || capabilities.durableHistory !== true) {
+  console.log(`\x1b[31m  the server answered mode '${capabilities.mode}' with durableHistory ${capabilities.durableHistory}, not a local runtime with durable history.\x1b[0m`);
+  process.exit(1);
+}
+const agents = Object.keys(info.agents ?? {});
+if (agents.length === 0) {
+  console.log("\x1b[31m  No Bots registered.\x1b[0m");
+  process.exit(1);
+}
+console.log(`\x1b[32m  local mode · Bots: ${agents.join(", ")}\x1b[0m`);
+JS
+else
+  INFO="$(curl -fsS --max-time 8 "http://localhost:$SERVER_PORT/api/copilotkit/info")"
+  bun run - "$INFO" <<'JS'
 const info = JSON.parse(process.argv[2]);
 const status = info.licenseStatus;
 const agents = Object.keys(info.agents ?? {});
@@ -423,6 +482,7 @@ if (agents.length === 0) {
 }
 console.log(`\x1b[32m  licence valid · mode ${info.mode} · Bots: ${agents.join(", ")}\x1b[0m`);
 JS
+fi
 
 info "4/4  App"
 require_free_or_ours "$APP_PORT" app

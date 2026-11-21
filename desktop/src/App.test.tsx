@@ -25,10 +25,18 @@ type Deferred<T> = {
   reject: (error: unknown) => void;
 };
 
+type CreatedWindow = { label: string; options: { url?: string } };
+
 let invokeCalls: Array<{ command: string; args?: unknown }> = [];
 let invokeHandler: Invoke = async () => {
   throw new Error("invoke handler was not installed");
 };
+let createdWindows: CreatedWindow[] = [];
+let fetchCalls: string[] = [];
+let fetchHandler: (url: string) => Promise<Response> = async (url) => {
+  throw new Error(`unexpected fetch to ${url}`);
+};
+const originalFetch = globalThis.fetch;
 const progressListeners = new Set<
   (event: { payload: ProgressEvent }) => void
 >();
@@ -50,19 +58,56 @@ mock.module("@tauri-apps/api/event", () => ({
   },
 }));
 
+mock.module("@tauri-apps/api/webviewWindow", () => ({
+  WebviewWindow: class {
+    constructor(label: string, options: { url?: string }) {
+      createdWindows.push({ label, options });
+    }
+
+    once() {
+      return () => {};
+    }
+  },
+}));
+
 mock.module("./Mark", () => ({
   Mark: ({ name }: { name: string }) => <span>{name}</span>,
 }));
 
-const { App } = await import("./App");
+const { App, parseLocalWorkbenchUrl, parseLocalWorkbenchCapabilities } =
+  await import("./App");
 
-beforeAll(() => GlobalRegistrator.register());
+function fetchUrl(input: RequestInfo | URL): string {
+  if (typeof input === "string") return input;
+  if (input instanceof URL) return input.href;
+  return input.url;
+}
+
+beforeAll(() => {
+  GlobalRegistrator.register();
+  globalThis.fetch = Object.assign(
+    async (input: RequestInfo | URL) => {
+      const url = fetchUrl(input);
+      fetchCalls.push(url);
+      return fetchHandler(url);
+    },
+    { preconnect: originalFetch.preconnect },
+  );
+});
 afterEach(() => {
   invokeCalls = [];
+  createdWindows = [];
+  fetchCalls = [];
+  fetchHandler = async (url) => {
+    throw new Error(`unexpected fetch to ${url}`);
+  };
   cleanup();
   progressListeners.clear();
 });
-afterAll(() => GlobalRegistrator.unregister());
+afterAll(() => {
+  GlobalRegistrator.unregister();
+  globalThis.fetch = originalFetch;
+});
 
 async function renderApp(strictMode = false) {
   let view!: ReturnType<typeof render>;
@@ -107,6 +152,158 @@ function installationCalls() {
     ["prepare_installation", "prepare_engine"].includes(call.command),
   );
 }
+
+test.each([
+  ["http://localhost:3010", "http://localhost:3010"],
+  ["http://127.0.0.1:3010", "http://127.0.0.1:3010"],
+  ["http://[::1]:3010", "http://[::1]:3010"],
+  ["  http://localhost:3010/  ", "http://localhost:3010"],
+])("local workbench URL accepts %s", (value, origin) => {
+  expect(parseLocalWorkbenchUrl(value)).toEqual({ kind: "ok", origin });
+});
+
+test.each([
+  ["", "Enter the address of a local workbench."],
+  ["not a url", "That is not a web address."],
+  ["https://localhost:3010", "uses http://, not https://"],
+  ["http://localhost:3010/workbench", "cannot include a path"],
+  ["http://localhost:3010?thread=1", "cannot include a query"],
+  ["http://localhost:3010#run", "cannot include a fragment"],
+  ["http://user:pass@localhost:3010", "cannot include a username or password"],
+  ["http://example.com:3010", "example.com is not this computer"],
+  ["http://localhost", "needs a port"],
+])("local workbench URL rejects %s with a named reason", (value, reason) => {
+  const parsed = parseLocalWorkbenchUrl(value);
+  expect(parsed.kind).toBe("problem");
+  if (parsed.kind === "problem") {
+    expect(parsed.problem.said).toContain(reason);
+  }
+});
+
+test("local workbench capabilities accept this product in local mode with durable history", () => {
+  expect(
+    parseLocalWorkbenchCapabilities({
+      mode: "local",
+      durableHistory: true,
+      product: "openbot",
+    }),
+  ).toEqual({ kind: "ok" });
+});
+
+test("local workbench capabilities reject a different mode", () => {
+  const parsed = parseLocalWorkbenchCapabilities({
+    mode: "intelligence",
+    durableHistory: true,
+    product: "openbot",
+  });
+  expect(parsed.kind).toBe("problem");
+  if (parsed.kind === "problem") {
+    expect(parsed.problem.said).toContain("mode intelligence");
+  }
+});
+
+test("local workbench capabilities reject missing durable history", () => {
+  const parsed = parseLocalWorkbenchCapabilities({
+    mode: "local",
+    product: "openbot",
+  });
+  expect(parsed.kind).toBe("problem");
+  if (parsed.kind === "problem") {
+    expect(parsed.problem.said).toContain("durableHistory nothing");
+  }
+});
+
+test("local workbench capabilities reject a missing product marker", () => {
+  const parsed = parseLocalWorkbenchCapabilities({
+    mode: "local",
+    durableHistory: true,
+  });
+  expect(parsed.kind).toBe("problem");
+  if (parsed.kind === "problem") {
+    expect(parsed.problem.said).toContain("product nothing");
+  }
+});
+
+test("local workbench capabilities reject a body that is not an object", () => {
+  const parsed = parseLocalWorkbenchCapabilities("local");
+  expect(parsed.kind).toBe("problem");
+  if (parsed.kind === "problem") {
+    expect(parsed.problem.said).toContain("not a local workbench");
+  }
+});
+
+function capabilitiesResponse(body: unknown, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+test("welcome connects to a checked local workbench in a new window", async () => {
+  setupRootConfiguration("/tmp/local-workbench", async () =>
+    emptyConfiguration(),
+  );
+  fetchHandler = async () =>
+    capabilitiesResponse({
+      mode: "local",
+      durableHistory: true,
+      product: "openbot",
+    });
+  const view = await renderApp();
+  expect(view.getByLabelText("Local workbench address")).toHaveProperty(
+    "value",
+    "http://localhost:3010",
+  );
+  await userEvent.click(
+    view.getByRole("button", { name: "Connect to a local workbench" }),
+  );
+  await waitFor(() => expect(createdWindows).toHaveLength(1));
+  expect(fetchCalls).toEqual(["http://localhost:3010/api/capabilities"]);
+  expect(createdWindows[0]).toEqual({
+    label: "local-workbench",
+    options: expect.objectContaining({ url: "http://localhost:3010" }),
+  });
+  expect(view.queryByRole("alert")).toBeNull();
+});
+
+test("a checked address that is not a local workbench is shown instead of opened", async () => {
+  setupRootConfiguration("/tmp/local-workbench", async () =>
+    emptyConfiguration(),
+  );
+  fetchHandler = async () =>
+    capabilitiesResponse({
+      mode: "intelligence",
+      durableHistory: true,
+      product: "openbot",
+    });
+  const view = await renderApp();
+  await userEvent.click(
+    view.getByRole("button", { name: "Connect to a local workbench" }),
+  );
+  expect((await view.findByRole("alert")).textContent).toContain(
+    "mode intelligence",
+  );
+  expect(createdWindows).toHaveLength(0);
+});
+
+test("an invalid local workbench address is shown without asking the network", async () => {
+  setupRootConfiguration("/tmp/local-workbench", async () =>
+    emptyConfiguration(),
+  );
+  const view = await renderApp();
+  const user = userEvent.setup({ document: view.container.ownerDocument });
+  const field = view.getByLabelText("Local workbench address");
+  await user.clear(field);
+  await user.type(field, "https://localhost:3010");
+  await user.click(
+    view.getByRole("button", { name: "Connect to a local workbench" }),
+  );
+  expect((await view.findByRole("alert")).textContent).toContain(
+    "uses http://, not https://",
+  );
+  expect(fetchCalls).toHaveLength(0);
+  expect(createdWindows).toHaveLength(0);
+});
 
 async function beginPendingInstallation() {
   setupRootConfiguration("/tmp/install-progress", async () =>

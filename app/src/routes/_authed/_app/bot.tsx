@@ -6,6 +6,7 @@ import { ComputerChatControls } from "@/components/computer/computer-controls";
 import { ComputerViewPanel } from "@/components/computer/computer-panel";
 import { DetailPanel } from "@/components/layout/detail-panel";
 import { SidebarToggleBar } from "@/components/layout/sidebar-toggle";
+import { LocalRunStatusStrip } from "@/components/local-run-status-strip";
 import { Button } from "@/components/ui/button";
 import { defaultAgentId } from "@/lib/agents/default-agent";
 import {
@@ -235,6 +236,13 @@ function BotChat({ agentId, name }: { agentId: string; name: string }) {
           >
             {stopped}
           </p>
+        ) : null}
+        {threadId ? (
+          <LocalRunStatusStrip
+            threadId={threadId}
+            agentId={agentId}
+            className="border-b px-6 py-2"
+          />
         ) : null}
         <div className="min-h-0 flex-1">
           {/*

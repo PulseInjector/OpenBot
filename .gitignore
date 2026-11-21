@@ -1,6 +1,9 @@
 .worktrees/
 .superpowers/
 
+# Machine-local notes and credentials. Not portable, never published.
+/.local/
+
 # Claude Code: .claude/skills/ is shared, the rest is local state
 .claude/worktrees/
 .claude/settings.local.json
@@ -53,3 +56,4 @@ venv/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.DS_Store

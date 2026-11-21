@@ -53,7 +53,12 @@ export type ProposedBotCardProps = {
   respond?: (result: unknown) => Promise<void>;
   /** The recorded answer, once there is one. Completed cards show it instead of controls. */
   result?: string;
-  create: (values: AgentFormValues, skills: string[]) => Promise<CreatedBot>;
+  requestId?: string;
+  create: (
+    values: AgentFormValues,
+    skills: string[],
+    requestId: string,
+  ) => Promise<CreatedBot>;
 };
 
 export function ProposedBotCard({
@@ -62,8 +67,13 @@ export function ProposedBotCard({
   respond,
   result,
   create,
+  requestId: savedRequestId,
 }: ProposedBotCardProps) {
+  const [partial, setPartial] = useState<CreatedBot | null>(null);
+  const submitting = useRef(false);
   const [sending, setSending] = useState<"create" | "decline" | null>(null);
+  const [fallbackRequestId] = useState(() => crypto.randomUUID());
+  const requestId = savedRequestId ?? fallbackRequestId;
   /**
    * A refusal from the server, kept on the card rather than answered with.
    *
@@ -107,12 +117,15 @@ export function ProposedBotCard({
   const { values, skills } = checked;
 
   const make = async () => {
+    if (submitting.current) return;
+    submitting.current = true;
     setSending("create");
     setRefusal(null);
     let outcome: CreatedBot;
     try {
-      outcome = await create(values, skills);
+      outcome = await create(values, skills, requestId);
     } catch (cause) {
+      submitting.current = false;
       // Left on the card with the buttons still live. See `refusal` above.
       setSending(null);
       setRefusal(
@@ -120,16 +133,27 @@ export function ProposedBotCard({
       );
       return;
     }
-    /*
-     * Pressing again is not offered from here on: the coworker exists, and a second press would make
-     * a second one. The answer carries its id, which is what the completed card links to.
-     */
+    if (outcome.failed.length > 0) {
+      submitting.current = false;
+      setPartial(outcome);
+      setSending(null);
+      setRefusal(
+        `${outcome.name} was created. Couldn't finish skills: ${outcome.failed.join(", ")}. Retry to complete the confirmed skills.`,
+      );
+      return;
+    }
+    // The answer carries the Bot id so the completed transcript card can link back to it.
     await answer(respond, botCardAnswer.created(outcome));
   };
 
   const decline = async () => {
+    if (submitting.current) return;
+    submitting.current = true;
     setSending("decline");
-    await answer(respond, botCardAnswer.declined());
+    await answer(
+      respond,
+      partial ? botCardAnswer.created(partial) : botCardAnswer.declined(),
+    );
   };
 
   return (
@@ -138,7 +162,9 @@ export function ProposedBotCard({
       caption={
         clashes
           ? `There's already a ${clashes.title}, and it's ${clashes.ownership === "the deployment's" ? "built into OpenBot" : clashes.ownership}. Two Bots with the same name are hard to tell apart.`
-          : "Nothing is created until you press Create it."
+          : partial
+            ? `${partial.name} was created. Finish its confirmed skills or keep its current access.`
+            : "Nothing is created until you press Create it."
       }
       title={titleFor(values.name, clashes)}
     >
@@ -187,7 +213,11 @@ export function ProposedBotCard({
           onClick={() => void make()}
           size="sm"
         >
-          {sending === "create" ? "Creating…" : "Create it"}
+          {sending === "create"
+            ? "Creating…"
+            : partial
+              ? "Retry skills"
+              : "Create it"}
         </Button>
         <Button
           disabled={Boolean(sending)}
@@ -195,7 +225,11 @@ export function ProposedBotCard({
           size="sm"
           variant="outline"
         >
-          {sending === "decline" ? "…" : "Don't create"}
+          {sending === "decline"
+            ? "…"
+            : partial
+              ? "Keep Bot with current skills"
+              : "Don't create"}
         </Button>
       </div>
     </GalleryFrame>

@@ -1,5 +1,6 @@
 import type { Context, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
+import { z } from "zod";
 import type { AuditEventType, AuditStore } from "../audit";
 import { recordAuditEvent } from "../audit";
 import type { AppVariables } from "../auth/guards";
@@ -11,6 +12,7 @@ import { isManagedEndpoint } from "./managed-endpoint";
 import { canManageAgent } from "./profile-policy";
 import {
   AgentAssignedError,
+  AgentCreationConflictError,
   AgentNotFoundError,
   AgentNotManageableError,
   type AgentProfileStore,
@@ -513,12 +515,34 @@ export function createAgentRoutes(
 
   routes.post("/", requireUser, async (context) => {
     // Malformed JSON is a recoverable client-input error and is validated by the same parser.
-    const parsed = parseAgentInput(
-      await context.req.json().catch(() => null),
-      allowPrivateHosts,
-      allowedHosts,
-    );
+    const body = await context.req.json().catch(() => null);
+    const parsed = parseAgentInput(body, allowPrivateHosts, allowedHosts);
     if (!parsed.ok) return context.json({ error: parsed.error }, 400);
+
+    const creation = z
+      .object({
+        requestId: z
+          .string()
+          .regex(/^[A-Za-z0-9:_-]{1,200}$/)
+          .optional(),
+        confirmation: z
+          .object({
+            skills: z.array(z.string().min(1).max(200)).max(1000),
+            apps: z
+              .array(
+                z.object({
+                  app: z.string().min(1).max(200),
+                  refs: z.array(z.string().min(1).max(400)).max(1000),
+                }),
+              )
+              .max(100),
+          })
+          .optional(),
+      })
+      .safeParse(body);
+    if (!creation.success)
+      return context.json({ error: "Invalid Bot creation confirmation." }, 400);
+    const { requestId, confirmation } = creation.data;
 
     try {
       /*
@@ -531,12 +555,17 @@ export function createAgentRoutes(
        * package carries, for the same purpose — and passing it only when no endpoint was given keeps
        * every other path exactly as it was: give an address and it is a remote Bot, as before.
        */
-      const agent = await store.create(context.var.actor, {
-        ...parsed.value,
-        ...(parsed.value.endpoint
-          ? {}
-          : { systemPrompt: parsed.value.roleDescription }),
-      });
+      const agent = await store.create(
+        context.var.actor,
+        {
+          ...parsed.value,
+          ...(confirmation ? { confirmation } : {}),
+          ...(parsed.value.endpoint
+            ? {}
+            : { systemPrompt: parsed.value.roleDescription }),
+        },
+        requestId,
+      );
       /*
        * The endpoint, because that is where conversation content will be sent, and whether a key was
        * attached, because "this Bot authenticates" is a fact and the key itself never is.
@@ -831,6 +860,9 @@ function agentDto(actor: AgentActor, agent: AgentProfile) {
 }
 
 function mapStoreError(context: Context, error: unknown): Response {
+  if (error instanceof AgentCreationConflictError) {
+    return context.json({ error: error.message }, 409);
+  }
   if (error instanceof AgentNotFoundError) {
     return context.json({ error: "Couldn't find that Bot." }, 404);
   }

@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Upstream OpenBot issue
+    url: https://github.com/CopilotKit/OpenBot/issues
+    about: Bugs in code this fork has not changed belong in the upstream repository

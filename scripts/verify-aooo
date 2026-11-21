@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Run a selected Bun journey in a fresh, migrated PostgreSQL cluster (macOS/Linux)."""
+import argparse
+import json
+import os
+from pathlib import Path
+import secrets
+import shutil
+import signal
+import socket
+import subprocess as sp
+import tempfile
+import time
+import xml.etree.ElementTree as ET
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT = 'server/tests/local-runtime-http.integration.test.ts'
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('test', nargs='?', default=DEFAULT, help='one repository-relative .test.ts file')
+args = parser.parse_args()
+case = (ROOT / args.test).resolve()
+if ROOT not in case.parents or not case.is_file() or not case.name.endswith('.test.ts'):
+    parser.error('expected an existing test inside this checkout')
+
+os.umask(0o077)
+os.chdir(ROOT)
+base = ROOT / '.logs/aooo'
+base.mkdir(parents=True, exist_ok=True)
+out = Path(tempfile.mkdtemp(prefix='verify-', dir=base))
+print(f'Evidence: {out}', flush=True)
+work = Path(tempfile.mkdtemp(prefix='aooo-pg-', dir='/tmp')).resolve()
+data = work / 'data'
+env = dict(PATH=os.environ['PATH'], HOME=str(work), LC_ALL='C', NO_COLOR='1')
+report = dict(case=str(case.relative_to(ROOT)), setup='not run', drive='not run', cleanup='not run')
+
+
+def run(*argv, capture=False, cwd=ROOT):
+    with (out / 'setup.log').open('a') as log:
+        return sp.run(argv, cwd=cwd, env=env, text=True, check=True, stderr=log,
+                      stdout=sp.PIPE if capture else log).stdout
+
+
+def stop_group(pid):
+    # A timed-out Bun test may leave its fixture servers in its process group.
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(pid, sig)
+        except ProcessLookupError:
+            return
+        time.sleep(0.3)
+
+
+def interrupt(*_):
+    raise KeyboardInterrupt
+
+
+signal.signal(signal.SIGTERM, interrupt)
+try:
+    report.update(
+        revision=run('git', 'rev-parse', 'HEAD', capture=True).strip(),
+        dirty=bool(run('git', 'status', '--porcelain', capture=True).strip()),
+        bun=run('bun', '--version', capture=True).strip(),
+        postgres=run('pg_ctl', '--version', capture=True).strip(),
+    )
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0))
+        port = str(sock.getsockname()[1])
+    password = secrets.token_hex(24)
+    (work / 'pw').write_text(password + '\n')
+    run(
+        'initdb', '-D', data, '-U', 'openbot', '--encoding=UTF8', '--locale=C',
+        '--auth-local=trust', '--auth-host=scram-sha-256', '--pwfile', work / 'pw',
+    )
+    run(
+        'pg_ctl', '-D', data, '-l', out / 'postgres.log', '-o',
+        f'-p {port} -k {work} -h 127.0.0.1', '-w', 'start',
+    )
+    run('createdb', '-h', work, '-p', port, '-U', 'openbot', 'openbot_test')
+    url = f'postgres://openbot:{password}@127.0.0.1:{port}/openbot_test'
+    env.update(DATABASE_URL=url, TEST_DATABASE_URL=url, PGPASSWORD=password,
+               UNIT5_LOG_DIR=str(out), AOOO_EVIDENCE_DIR=str(out),
+               AOOO_CREATION_EVIDENCE=str(out / 'creation.json'))
+    sql = ['psql', '-XAt', '-v', 'ON_ERROR_STOP=1', '-h', '127.0.0.1', '-p', port,
+           '-U', 'openbot', '-d', 'openbot_test', '-c']
+    if Path(run(*sql, 'SHOW data_directory', capture=True).strip()).resolve() != data:
+        raise ValueError('TCP endpoint is not the owned cluster')
+    run('bun', '--no-env-file', 'scripts/migrate.ts', cwd=ROOT / 'server')
+    doctor = run(
+        *sql,
+        "SELECT current_database(), 'local_runs'::regclass, "
+        "(SELECT count(*) FROM drizzle.__drizzle_migrations)",
+        capture=True,
+    ).strip()
+    (out / 'doctor.txt').write_text(f'Owned cluster on loopback:{port}\n{doctor}\n')
+    report['setup'] = 'passed'
+    report['drive'] = 'failed'
+    with (out / 'drive.log').open('w') as log:
+        child = sp.Popen(
+            ['bun', '--no-env-file', 'test', '--reporter=junit',
+             f'--reporter-outfile={out}/cases.xml', './' + report['case']],
+            stdout=log, stderr=sp.STDOUT, env=env, start_new_session=True,
+        )
+        try:
+            report['exit'] = child.wait(timeout=180)
+        finally:
+            stop_group(child.pid)
+            child.wait()
+    if report['exit']:
+        raise ValueError('journey failed; inspect drive.log')
+    xml = ET.parse(out / 'cases.xml')
+    root = xml.getroot()
+    cases = root.findall('.//testcase')
+    report.update(
+        tests=int(root.attrib['tests']),
+        assertions=int(root.attrib.get('assertions', 0)),
+        skipped=int(root.attrib.get('skipped', 0)),
+        failures=int(root.attrib.get('failures', 0)),
+    )
+    if not cases or report['skipped'] == len(cases):
+        report['drive'] = 'not run'
+        raise ValueError('no test executed; inspect cases.xml')
+    if any(c.find(tag) is not None for c in cases for tag in ('skipped', 'failure', 'error')):
+        raise ValueError('empty, skipped or failed journey; inspect cases.xml')
+    report['drive'] = 'passed'
+except (Exception, KeyboardInterrupt) as err:
+    if report['setup'] == 'not run':
+        report['setup'] = 'failed'
+    print(str(err) or 'Interrupted', flush=True)
+finally:
+    try:
+        if (data / 'postmaster.pid').exists():
+            run('pg_ctl', '-D', data, '-m', 'fast', '-w', 'stop')
+        shutil.rmtree(work)
+        report['cleanup'] = 'passed'
+    except Exception:
+        report['cleanup'] = 'failed'
+        print(f'Cleanup incomplete: inspect {work} and postgres.log')
+    (out / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
+    print(json.dumps(report), flush=True)
+raise SystemExit(0 if all(report[k] == 'passed' for k in ('setup', 'drive', 'cleanup')) else 1)

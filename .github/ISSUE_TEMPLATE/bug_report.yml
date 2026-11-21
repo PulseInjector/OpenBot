@@ -1,0 +1,86 @@
+name: Bug Report
+description: Report something that isn't working
+title: "[BUG] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > **Security notice:** Never paste real API keys, tokens, or passwords in this form.
+        > Replace them with placeholders like `sk-***` or `your-token-here` before submitting.
+        > This repository is public, and secrets posted here cannot be fully deleted from GitHub's
+        > history.
+
+        Please include **observed** behavior and repro steps. Guesses make triage slower. Say which
+        runtime you were on, local mode or Intelligence mode, and the Bun version if relevant.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One-line description of the bug. Be specific (e.g. `bun run typecheck:tests` fails on `config.test.ts:63`).
+      placeholder: "Example: local mode startup fails when DATABASE_URL points at a Unix socket"
+    validations:
+      required: true
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: Expected vs actual behavior
+      description: What should happen, and what happens instead? Include exact errors, exit codes, or unexpected output.
+      placeholder: |
+        **Expected:** …
+
+        **Actual:** …
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps that consistently trigger the bug. Commands and config snippets, with secrets redacted.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Runtime
+      options:
+        - Local mode (no Intelligence)
+        - Intelligence mode
+        - Both
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and error output
+      description: Full error message and relevant logs. Redact API keys, tokens, and passwords.
+      placeholder: |
+        ```
+        [paste error / logs]
+        ```
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Screenshots, related issues, what you were trying to do when this happened.
+    validations:
+      required: false

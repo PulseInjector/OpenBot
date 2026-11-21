@@ -1,5 +1,6 @@
 import type { AbstractAgent } from "@ag-ui/client";
 import type { ComputerGuidance } from "@openbot/shared/bot-prompt";
+import type { ToolOperationRecorder } from "@openbot/toolkit/tool-operation";
 import type { AuditInitiator } from "../audit";
 import type { AgentFetch, StallGuard } from "../channels/stall-guard";
 import {
@@ -21,6 +22,7 @@ import type { AgentActor } from "./profile-types";
 export type AgentResolutionContext = {
   initiator?: AuditInitiator;
   depth?: number;
+  operations?: ToolOperationRecorder;
 };
 
 export class CoworkerUnavailableError extends Error {}
@@ -28,6 +30,7 @@ export class CoworkerUnavailableError extends Error {}
 export type ActorAgentResolver = {
   resolveAgentsForActor(
     actor: AgentActor,
+    context?: AgentResolutionContext,
   ): Promise<Record<string, AbstractAgent>>;
   resolveAgentForActor(
     actor: AgentActor,
@@ -113,10 +116,19 @@ export function createActorAgentResolver(
       deps.markAttachmentsSentForActor?.(actor.id),
       deps.acquireLearnedSkills,
       deps.loadPersonalMemoryForActor?.(actor.id),
+      context?.operations,
     );
 
-  const resolveAgentsForActor = async (actor: AgentActor) =>
-    resolveRegisteredAgents(actor, await deps.loadAgents(actor));
+  const resolveAgentsForActor = async (
+    actor: AgentActor,
+    context?: AgentResolutionContext,
+  ) =>
+    resolveRegisteredAgents(
+      actor,
+      await deps.loadAgents(actor),
+      undefined,
+      context,
+    );
 
   return {
     resolveAgentsForActor,

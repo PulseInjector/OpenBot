@@ -42,6 +42,9 @@ describe("runtime capabilities", () => {
     await expect(response.json()).resolves.toEqual({
       mode: "intelligence",
       durableHistory: true,
+      // A constant, in every mode: the startup script greps for it to tell this server from an
+      // unrelated listener that answers 200 on the same port.
+      product: "openbot",
       // Default-on. The browser reads this to decide whether to offer the tool that generates an
       // interface, so it has to be here and not only in the runtime.
       generativeUi: true,
@@ -73,6 +76,7 @@ describe("runtime capabilities", () => {
     expect(Object.keys(parsed)).toEqual([
       "mode",
       "durableHistory",
+      "product",
       "generativeUi",
       "selfHostBanner",
       "localEvaluation",
@@ -119,6 +123,34 @@ describe("runtime capabilities", () => {
 
     expect(response.status).toBe(200);
     expect((await response.json()).selfHostBanner).toBe(false);
+  });
+
+  test("reports the self-host banner as off in local runtime mode", async () => {
+    const local = createApp(
+      loadConfig(testEnvironment({ OPENBOT_RUNTIME_MODE: "local" })),
+    );
+
+    const response = await local.request("/api/capabilities");
+
+    expect(response.status).toBe(200);
+    expect((await response.json()).selfHostBanner).toBe(false);
+  });
+
+  // What the startup script's local probe requires of a listener: the marker names the product, and
+  // the mode and durable history name the runtime this script is starting.
+  test("carries the product marker in local runtime mode", async () => {
+    const local = createApp(
+      loadConfig(testEnvironment({ OPENBOT_RUNTIME_MODE: "local" })),
+    );
+
+    const response = await local.request("/api/capabilities");
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      product: "openbot",
+      mode: "local",
+      durableHistory: true,
+    });
   });
 });
 

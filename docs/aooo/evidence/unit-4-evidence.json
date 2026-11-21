@@ -1,0 +1,49 @@
+{
+  "checkedOn": "2026-11-18",
+  "branch": "feat/local-bot-workbench",
+  "implementationCommits": ["a0156d7b", "7f5b1758"],
+  "database": "isolated local PostgreSQL 17.9, port 56432, database openbot_test",
+  "checks": {
+    "migrationApplied": true,
+    "schemaGenerationClean": true,
+    "targetedTests": {
+      "passed": 42,
+      "assertions": 160
+    },
+    "workspaceTypecheck": true,
+    "testTypecheckCleanAgainstBaseline": true,
+    "migrationAndSchemaTests": true,
+    "biome": true,
+    "diffCheck": true
+  },
+  "timelines": {
+    "stopBetweenCalls": [
+      "run.queued",
+      "attempt.started",
+      "operation.intent",
+      "operation.dispatched",
+      "attempt.stop_requested",
+      "operation.succeeded",
+      "attempt.interrupted"
+    ],
+    "operationLifecycle": [
+      "operation.intent",
+      "operation.dispatched",
+      "operation.succeeded"
+    ],
+    "timedOutLateResult": ["operation.unknown", "operation.succeeded"]
+  },
+  "externalVerification": {
+    "liveModelOrBusinessNotionRun": false,
+    "implementationPlanNotionRecordUpdated": true,
+    "localRuntimeSuppliesRecorderByDefault": false,
+    "remoteSideEffectsReadBack": false,
+    "limitation": "A durable tool return is not proof of remote state; external effects without a verifiable receipt remain unknown until read back."
+  },
+  "evidenceFiles": [
+    "docs/aooo/evidence/unit-4-checks.md",
+    "server/tests/local-runtime-store.integration.test.ts",
+    "toolkit/tests/tool-operation.test.ts",
+    "server/drizzle/0069_tool_operation_stop_boundary.sql"
+  ]
+}

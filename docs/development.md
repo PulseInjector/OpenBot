@@ -68,6 +68,32 @@ long-lived local deployment can reach a state where attaching anything is refuse
 in the composer deletes it outright, so it takes abandoned drafts rather than ordinary use.
 [deployment.md](deployment.md) says the same for a real deployment.
 
+## Bot creation retries
+
+The conversation confirmation card derives its creation request ID from the transcript's
+`save_bot` tool-call ID. A remount therefore submits the same ID and confirmed payload. The New
+Bot sheet keeps one ID and an immutable confirmation while it remains open; it does not restore
+an unfinished manual form after closing or reloading the page.
+
+`POST /api/agents` accepts `requestId` and an optional `confirmation` containing skill slugs and
+app tool refs. The server hashes the normalized creation fields and confirmed permissions, locks
+the authenticated actor/request pair, and commits the Bot, profile, and `agent_creation_requests`
+row together. A matching retry returns the existing Bot; changed content or a deleted original
+returns 409. Names remain nonunique. Existing internal and legacy calls without a request ID keep
+their previous creation behavior and have no deduplication guarantee.
+
+After creating the Bot, the conversation card freshly reads its skills and grants only missing
+confirmed slugs. A partial failure keeps the card open for retry. The New Bot sheet captures the
+selected apps and the exact refs returned by `/api/plugins/giveable`. Each keyed owner-app grant
+saves its first ref set in `owner_app_grant_requests`, re-reads existing grants, and fills only
+missing refs. A changed explicit confirmation returns 409; tools added by a directory refresh are
+never included in that retry. Current ownership, connection, and tool eligibility are still
+checked. Creation and grants are separate operations, so a grant failure leaves the Bot present.
+
+Apply generated migrations `0066_even_spyke` and `0067_shiny_chronomancer` before serving the new
+creation and owner-grant routes. Focused acceptance commands and recorded counts are in
+[the unit 2 check record](aooo/evidence/unit-2-checks.md).
+
 ## Migrations
 
 After changing the Drizzle schema:
@@ -119,6 +145,8 @@ restoring it can reinstate entries for migrations that were renamed. `drizzle-ki
 and the directory agree. Compare `meta/_journal.json` against `ls server/drizzle/*.sql`.
 
 ## Quality checks
+
+For the aooo local workbench, run `bun run verify:aooo` from the root. It runs the two-server HTTP journey against a fresh, migrated PostgreSQL cluster, keeps its evidence, and removes the cluster. Pass a single repository-relative Bun test file to reuse this setup. See the [verification skill and feature map](../.claude/skills/verify-aooo/SKILL.md) for prerequisites, proof boundaries, and how to add the next unit's journey.
 
 Run these before opening a pull request:
 

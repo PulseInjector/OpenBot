@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { MCPMock } from "@copilotkit/aimock/mcp";
+import { withApprovalContext } from "@openbot/toolkit/continuation";
+import { executeRecordedTool } from "@openbot/toolkit/tool-operation";
 import { callTool, listTools } from "../src/plugins/mcp";
 
 /**
@@ -184,5 +186,132 @@ describe("a server that cannot be reached", () => {
     await expect(
       listTools({ url: "http://127.0.0.1:9/mcp" }),
     ).rejects.toBeInstanceOf(Error);
+  });
+});
+
+/*
+ * The trace is what lets an evidence run count physical writes. Local operation rows say what this
+ * deployment recorded; only this line says what actually crossed to the vendor, and the duplicate
+ * acceptance treats an uncounted mutation as inconclusive rather than passed.
+ */
+async function tracedCalls(run: () => Promise<unknown>): Promise<string[]> {
+  const lines: string[] = [];
+  const original = console.info;
+  console.info = (line: string) => {
+    lines.push(line);
+  };
+  try {
+    await run();
+  } finally {
+    console.info = original;
+  }
+  return lines;
+}
+
+describe("the connector trace", () => {
+  test("a call through the boundary emits exactly one line naming the server, tool and outcome", async () => {
+    const lines = await tracedCalls(() =>
+      callTool({ url }, "search_issues", { query: "billing" }),
+    );
+
+    expect(lines.length).toBe(1);
+    const line = JSON.parse(lines[0] as string) as Record<string, unknown>;
+    expect(line.type).toBe("mcp-call");
+    expect(line.server).toBe(url);
+    expect(line.tool).toBe("search_issues");
+    expect(line.outcome).toBe("succeeded");
+  });
+
+  test("the line carries the tool call id the recorded wrapper threads", async () => {
+    // The id reaches the connector through the continuation context the wrapper enters around every
+    // recorded execute, not through the connection, so the pin has to enter it the same way.
+    const lines = await tracedCalls(() =>
+      withApprovalContext(
+        {
+          runId: "run_1",
+          threadId: "thread_1",
+          toolCallId: "call_trace_1",
+          toolName: "search_issues",
+          args: {},
+          messages: [],
+          state: {},
+          context: [],
+          forwardedProps: {},
+        },
+        () => callTool({ url }, "search_issues", { query: "billing" }),
+      ),
+    );
+
+    const line = JSON.parse(lines[0] as string) as Record<string, unknown>;
+    expect(line.toolCallId).toBe("call_trace_1");
+  });
+
+  test("a recorded execute without an approval context still traces its tool call id", async () => {
+    // The channel path (copilot's built-in agent) records its tools through executeRecordedTool
+    // with no approval continuation in scope; the live unit-7 run proved the id was then missing
+    // from every in-run trace line, so the judge could never attribute a physical write. The
+    // recorder wrapper is the one place every recorded path shares, so the id has to travel from
+    // there, not only from the approval context.
+    const recorder = {
+      authorize: async () => {},
+      begin: async () => "operation_1",
+      dispatch: async () => {},
+      settle: async () => {},
+    };
+    const lines = await tracedCalls(() =>
+      executeRecordedTool({
+        recorder,
+        toolCallId: "call_recorded_1",
+        toolName: "search_issues",
+        parameters: { query: "billing" },
+        execute: () => callTool({ url }, "search_issues", { query: "billing" }),
+      }),
+    );
+
+    const line = JSON.parse(lines[0] as string) as Record<string, unknown>;
+    expect(line.toolCallId).toBe("call_recorded_1");
+  });
+
+  test("a call outside any recorded turn omits the id rather than guessing one", async () => {
+    const lines = await tracedCalls(() =>
+      callTool({ url }, "search_issues", { query: "billing" }),
+    );
+
+    const line = JSON.parse(lines[0] as string) as Record<string, unknown>;
+    expect("toolCallId" in line).toBe(false);
+  });
+
+  test("a vendor-reported failure is traced as failed, not only transport errors", async () => {
+    const lines = await tracedCalls(() =>
+      callTool({ url }, "always_fails", {}),
+    );
+
+    expect(lines.length).toBe(1);
+    const line = JSON.parse(lines[0] as string) as Record<string, unknown>;
+    expect(line.outcome).toBe("failed");
+  });
+
+  test("a call that never reached the server still leaves one failed line behind", async () => {
+    const lines = await tracedCalls(async () => {
+      await expect(
+        callTool({ url: "http://127.0.0.1:9/mcp" }, "search_issues", {}),
+      ).rejects.toBeInstanceOf(Error);
+    });
+
+    expect(lines.length).toBe(1);
+    const line = JSON.parse(lines[0] as string) as Record<string, unknown>;
+    expect(line.outcome).toBe("failed");
+  });
+
+  test("the line carries no argument payload and no token", async () => {
+    const lines = await tracedCalls(() =>
+      callTool({ url, token: "trace-secret-token" }, "search_issues", {
+        query: "billing",
+      }),
+    );
+
+    expect(lines.length).toBe(1);
+    expect(lines[0]).not.toContain("billing");
+    expect(lines[0]).not.toContain("trace-secret-token");
   });
 });

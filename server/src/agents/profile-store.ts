@@ -1,12 +1,21 @@
+import { createHash } from "node:crypto";
+import type { BotCreationConfirmation } from "@openbot/shared/bot-creation";
 import { and, eq, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { CredentialStore } from "../credentials";
 import type { Database } from "../db/client";
 import {
+  agentCreationRequests,
   agentPreferences,
   agentProfiles,
   agents,
   deploymentPackages,
 } from "../db/schema";
+import { teamBotPublications } from "../db/schema/team-bots";
+import {
+  assignedCondition,
+  assignedToActor,
+  teamBotAccess,
+} from "../team-bots/access";
 import {
   authFromConfiguration,
   retireReplacedKey,
@@ -17,12 +26,6 @@ import {
   mintCallbackToken,
   sameToken,
 } from "./callback-token";
-import {
-  assignedCondition,
-  assignedToActor,
-  teamBotAccess,
-} from "../team-bots/access";
-import { teamBotPublications } from "../db/schema/team-bots";
 import { canManageAgent } from "./profile-policy";
 import type {
   AgentActor,
@@ -68,7 +71,9 @@ export type AgentProfileStore = {
        * different act with different consequences, and this is the creation path.
        */
       systemPrompt?: string;
+      confirmation?: BotCreationConfirmation;
     },
+    requestId?: string,
   ): Promise<AgentProfile>;
   update(
     actor: AgentActor,
@@ -123,6 +128,13 @@ export class ManagedAgentUnavailableError extends Error {
   constructor() {
     super("OpenBot has no managed Bot. Give this Bot its own AG-UI endpoint.");
     this.name = "ManagedAgentUnavailableError";
+  }
+}
+
+export class AgentCreationConflictError extends Error {
+  constructor() {
+    super("This create request ID was already used for different Bot details.");
+    this.name = "AgentCreationConflictError";
   }
 }
 
@@ -435,8 +447,63 @@ export function createAgentProfileStore(
       return findAccessibleProfile(executor, actor, id);
     },
 
-    create(actor, input) {
+    create(actor, input, requestId) {
       return database.transaction(async (transaction) => {
+        const requestHash = createHash("sha256")
+          .update(
+            JSON.stringify({
+              name: input.name,
+              title: input.title,
+              roleDescription: input.roleDescription,
+              visibility: input.visibility,
+              endpoint: input.endpoint ?? null,
+              auth: input.auth
+                ? { header: input.auth.header, value: input.auth.value }
+                : null,
+              systemPrompt: input.systemPrompt?.trim() ?? null,
+              confirmation: input.confirmation
+                ? {
+                    skills: [...new Set(input.confirmation.skills)].sort(),
+                    apps: input.confirmation.apps
+                      .map((app) => ({
+                        app: app.app,
+                        refs: [...new Set(app.refs)].sort(),
+                      }))
+                      .sort((a, b) => a.app.localeCompare(b.app)),
+                  }
+                : null,
+            }),
+          )
+          .digest("hex");
+        if (requestId) {
+          // Serialize one actor/key pair so concurrent retries observe the winning row.
+          await transaction.execute(
+            sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify([actor.id, requestId])}, 0))`,
+          );
+          const [previous] = await transaction
+            .select()
+            .from(agentCreationRequests)
+            .where(
+              and(
+                eq(agentCreationRequests.actorId, actor.id),
+                eq(agentCreationRequests.requestId, requestId),
+              ),
+            )
+            .limit(1);
+          if (previous) {
+            if (previous.requestHash !== requestHash)
+              throw new AgentCreationConflictError();
+            const existing = await findAccessibleProfile(
+              transaction,
+              actor,
+              previous.agentId,
+            );
+            if (existing) return existing;
+            // The Bot was deleted after creation. Keep the key consumed and report a conflict
+            // rather than silently creating a second Bot for the same confirmation.
+            throw new AgentCreationConflictError();
+          }
+        }
         const id = newAgentId();
         const endpoint = input.endpoint
           ? { endpoint: input.endpoint }
@@ -504,6 +571,13 @@ export function createAgentProfileStore(
 
         const profile = await findAccessibleProfile(transaction, actor, id);
         if (!profile) throw new AgentNotFoundError(id);
+        if (requestId)
+          await transaction.insert(agentCreationRequests).values({
+            actorId: actor.id,
+            requestId,
+            requestHash,
+            agentId: id,
+          });
         return profile;
       });
     },

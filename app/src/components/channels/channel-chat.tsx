@@ -10,6 +10,7 @@ import { observeApprovalAgent } from "@/lib/copilot/approval-context";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { HandoffResumeNotice } from "@/components/computer/handoff-resume-notice";
+import { LocalRunStatusStrip } from "@/components/local-run-status-strip";
 import { attachmentModality } from "@/components/channels/chat-messages";
 import { toAgentOptions } from "@/components/channels/composer";
 import { ChannelWorkRows } from "@/components/channels/channel-work";
@@ -1023,6 +1024,11 @@ export function ChannelChat({
                     but the Bot can't reply.
                   </p>
                 )}
+                <LocalRunStatusStrip
+                  threadId={channel.threadId}
+                  agentId={runtimeAgentId}
+                  className="pb-2"
+                />
               </>
             }
             onSubmit={async (draft) => {

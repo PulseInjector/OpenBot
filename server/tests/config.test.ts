@@ -60,6 +60,9 @@ describe("deployment configuration", () => {
     expect(config.singleUser).toBe(false);
     expect(config.auth).toBeUndefined();
     expect(config.organizationAuthUrl).toBe("https://openbot.company.example");
+    if (config.runtime.mode !== "intelligence") {
+      throw new Error("expected the Intelligence runtime");
+    }
     expect(config.runtime.intelligence.apiKey).toBe("tenant-api-key");
   });
   test("resolves the Intelligence runtime, which is the only runtime", () => {
@@ -80,6 +83,23 @@ describe("deployment configuration", () => {
       token: "managed-agent-token",
     });
     expect(config.tenantPackageDirectory).toBe("../examples/fintech");
+  });
+
+  test("selects local durable runtime without any Intelligence credentials", () => {
+    const config = loadConfig({
+      DATABASE_URL: baseEnvironment.DATABASE_URL,
+      KEY_ENCRYPTION_KEY: baseEnvironment.KEY_ENCRYPTION_KEY,
+      OPENBOT_SINGLE_USER: "true",
+      OPENBOT_RUNTIME_MODE: "local",
+    });
+
+    expect(config.runtime).toEqual({ mode: "local", durableHistory: true });
+  });
+
+  test("rejects an unknown runtime mode", () => {
+    expect(() =>
+      loadConfig({ ...baseEnvironment, OPENBOT_RUNTIME_MODE: "memory" }),
+    ).toThrow('OPENBOT_RUNTIME_MODE must be "local" or "intelligence"');
   });
 
   test("allows deployment without an authentication provider, when asked to", () => {

@@ -63,8 +63,12 @@ let giveable: {
   displayName: string;
   logo: null;
   account: string;
+  refs?: string[];
 }[] = [];
 let given: string[] = [];
+let givenBodies: unknown[] = [];
+let loseCreateResponse = false;
+let failNextGrant = false;
 
 beforeEach(() => {
   builtInAvailable = true;
@@ -73,6 +77,9 @@ beforeEach(() => {
   dialled = [];
   giveable = [];
   given = [];
+  givenBodies = [];
+  loseCreateResponse = false;
+  failNextGrant = false;
   global.fetch = Object.assign(
     async (path: Parameters<typeof fetch>[0], init?: RequestInit) => {
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
@@ -85,12 +92,24 @@ beforeEach(() => {
       }
       if (path === "/api/agents" && init?.method === "POST") {
         creates.push(body);
+        if (loseCreateResponse) {
+          loseCreateResponse = false;
+          throw new Error("Response lost after commit");
+        }
         return Response.json({ agent: { id: "agent_new" } }, { status: 201 });
       }
       if (path === "/api/plugins/giveable")
         return Response.json({ apps: giveable });
       if (String(path).endsWith("/give") && init?.method === "POST") {
         given.push(String(path));
+        givenBodies.push(body);
+        if (failNextGrant) {
+          failNextGrant = false;
+          return Response.json(
+            { error: "Injected partial failure" },
+            { status: 500 },
+          );
+        }
         return Response.json({ granted: [] });
       }
       return new Response(null, { status: 404 });
@@ -343,4 +362,63 @@ test("a person with no apps to give is asked nothing about apps", async () => {
   await view.findByLabelText("Name");
   await settle();
   expect(view.queryByText("Apps it can use")).toBeNull();
+});
+
+test("a lost create response retries the same confirmed Bot and request ID", async () => {
+  loseCreateResponse = true;
+  const { view, user } = await opened();
+  await user.click(view.getByRole("button", { name: "Continue" }));
+  await user.type(await view.findByLabelText("Name"), "Retry Desk");
+  await user.click(view.getByRole("button", { name: "Create" }));
+  await view.findByText("Response lost after commit");
+  await user.click(view.getByRole("button", { name: "Retry" }));
+  await view.findByText("Retry Desk is ready");
+  expect(creates).toHaveLength(2);
+  expect(creates[0]?.requestId).toBeTruthy();
+  expect(creates[1]).toEqual(creates[0]);
+});
+
+test("partial app access retries only the apps and refs originally confirmed", async () => {
+  giveable = [
+    {
+      key: "notion",
+      displayName: "Notion",
+      logo: null,
+      account: "personal",
+      refs: ["notion/read", "notion/list"],
+    },
+  ];
+  failNextGrant = true;
+  const { view, user } = await opened();
+  await user.click(view.getByRole("button", { name: "Continue" }));
+  await user.type(await view.findByLabelText("Name"), "Partial Desk");
+  await user.click(view.getByRole("button", { name: "Create" }));
+  await view.findByText(/Couldn't finish access to Notion/);
+  // The next directory listing is wider than the confirmed one.
+  giveable = [
+    ...giveable.map((app) => ({
+      ...app,
+      refs: [...(app.refs ?? []), "notion/new-read"],
+    })),
+    {
+      key: "gmail",
+      displayName: "Gmail",
+      logo: null,
+      account: "personal",
+      refs: ["gmail/read"],
+    },
+  ];
+  await user.click(view.getByRole("button", { name: "Retry" }));
+  await view.findByText("Partial Desk is ready");
+  expect(creates).toHaveLength(2);
+  expect(creates[1]).toEqual(creates[0]);
+  expect(given).toEqual([
+    "/api/plugins/for/agent_new/apps/notion/give",
+    "/api/plugins/for/agent_new/apps/notion/give",
+  ]);
+  expect(givenBodies[0]).toEqual({
+    requestId: creates[0]?.requestId,
+    refs: ["notion/read", "notion/list"],
+  });
+  expect(givenBodies[1]).toEqual(givenBodies[0]);
 });

@@ -1,8 +1,4 @@
-/**
- * What the runtime can do. There is exactly one answer because CopilotKit Intelligence is required
- * for durable threads and memory. Configuration the product cannot function without belongs at the
- * boot boundary.
- */
+/** The selected execution backend and the durable capabilities it provides. */
 import {
   isLearningContainerId,
   type LearningTarget,
@@ -20,11 +16,16 @@ import type { BrokerProvider } from "./plugins/access";
 import { type VoiceConfig, voiceConfig } from "./voice/config";
 import { type WebBotAuth, webBotAuthFromEnv } from "./web-bot-auth";
 
-export type RuntimeCapabilities = {
-  mode: "intelligence";
-  durableHistory: true;
-  intelligence: IntelligenceSettings;
-};
+export type RuntimeCapabilities =
+  | {
+      mode: "intelligence";
+      durableHistory: true;
+      intelligence: IntelligenceSettings;
+    }
+  | {
+      mode: "local";
+      durableHistory: true;
+    };
 
 /**
  * The Intelligence contract. Three values are required; see runtimeCapabilities.
@@ -969,6 +970,16 @@ function oktaAuth(
  * deployment sets one, which is what a self-hosted Intelligence with its own licence needs.
  */
 function runtimeCapabilities(environment: Environment): RuntimeCapabilities {
+  const mode = optional(environment, "OPENBOT_RUNTIME_MODE") ?? "intelligence";
+  if (mode === "local") {
+    return { mode, durableHistory: true };
+  }
+  if (mode !== "intelligence") {
+    throw new Error(
+      `OPENBOT_RUNTIME_MODE must be "local" or "intelligence", received "${mode}".`,
+    );
+  }
+
   const settings = {
     apiUrl: url(environment, "INTELLIGENCE_API_URL"),
     gatewayWsUrl: url(environment, "INTELLIGENCE_GATEWAY_WS_URL"),

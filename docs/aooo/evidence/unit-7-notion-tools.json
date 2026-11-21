@@ -1,0 +1,503 @@
+{
+  "server": "notion",
+  "generatedAt": "2026-11-21T12:20:21.064Z",
+  "origin": "written by scripts/aooo/notion-preflight.ts from the plugin store's refreshed listing",
+  "reviewedWriteTools": [
+    "notion-calendar-cancel-events",
+    "notion-calendar-create-events",
+    "notion-calendar-update-events",
+    "notion-complete-mcp-setup",
+    "notion-convert-page-to-skill",
+    "notion-convert-to-meetings-database",
+    "notion-create-attachment",
+    "notion-create-comment",
+    "notion-create-database",
+    "notion-create-file-upload",
+    "notion-create-folder",
+    "notion-create-meeting-note",
+    "notion-create-pages",
+    "notion-create-suggested-edit",
+    "notion-create-view",
+    "notion-delete-comment",
+    "notion-delete-databases",
+    "notion-delete-pages",
+    "notion-duplicate-page",
+    "notion-link-meeting-note-to-calendar-event",
+    "notion-move-pages",
+    "notion-resolve-suggested-edit",
+    "notion-restore-pages",
+    "notion-restore-version",
+    "notion-send-message-to-session",
+    "notion-set-comment-reaction",
+    "notion-set-discussion-resolved",
+    "notion-spawn-session",
+    "notion-stop-session",
+    "notion-update-comment",
+    "notion-update-data-source",
+    "notion-update-folder",
+    "notion-update-page",
+    "notion-update-page-favorites",
+    "notion-update-sidebar-tabs",
+    "notion-update-skill-settings",
+    "notion-update-view",
+    "notion-upload-skill"
+  ],
+  "advertised": [
+    {
+      "name": "notion-calendar-cancel-events",
+      "classified": "write",
+      "vendorEffect": "write",
+      "schemaSha256": "1da8d5f21cbc8f4c76f7bb13da765c926e9c55f6fd0b31317e9ac955de3f8470"
+    },
+    {
+      "name": "notion-calendar-create-events",
+      "classified": "write",
+      "vendorEffect": "write",
+      "schemaSha256": "e0a5075e3ce50b1435f68d3e0b535bca47c189099864b7301b474d0d403225a6"
+    },
+    {
+      "name": "notion-calendar-list-calendar-resources",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "832756f2c0d879895051d53f20ff9bc1eea06e585351c8a7308cc03fd0f0f825"
+    },
+    {
+      "name": "notion-calendar-list-calendars",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "b6df01a7d1bf741adcc838fc5811c46a77633efb435c6b8261d21d2a30ee28ab"
+    },
+    {
+      "name": "notion-calendar-list-contacts",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "e27a5cd6f5d91df9fdf121d425e35ed7c75caa8220236833590d90a8171756e1"
+    },
+    {
+      "name": "notion-calendar-list-coworkers-events",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "69f8a5d6d561e786dd9f2790863f8d5cccd658c5d049683df709a2c7fe1c5ea6"
+    },
+    {
+      "name": "notion-calendar-list-events",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "5601880596ff6bac5d0b32cb9f4089c5a4f94eeb5df0d2f4dc65155ed9d44579"
+    },
+    {
+      "name": "notion-calendar-update-events",
+      "classified": "write",
+      "vendorEffect": "write",
+      "schemaSha256": "cd7aaaacba43f016f22f7eb52ef6201a248a279b1314663581d1b0cf94b42766"
+    },
+    {
+      "name": "notion-complete-mcp-setup",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "95e987c3fca4bea1b43b96afdc6a3220bc9bce5aaba871ed27ecebfdf99300f5"
+    },
+    {
+      "name": "notion-convert-page-to-skill",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "16e2315d75b5c574f9a2b9584124a0686d0a1b88d42883a03aae8d92e53a855f"
+    },
+    {
+      "name": "notion-convert-to-meetings-database",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "99e09a81ba44e986b15a9430380a00ca278bf0052a43838ac90cc620db09af9d"
+    },
+    {
+      "name": "notion-create-attachment",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "256053a7b4fecd6cbcd4d8c0d0861e23446e8e6f5152f55f3d8540e6888d310e"
+    },
+    {
+      "name": "notion-create-comment",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "57dec0a40e14e0801b967b300b01e94f0765163314c2acd50dbbba961cdea574"
+    },
+    {
+      "name": "notion-create-database",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "efca9a5de0faa9ca368c4616bad8143cd5c964291aabd829604039cef36a109b"
+    },
+    {
+      "name": "notion-create-file-upload",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "290c1669a48d2f2064184aba0b7c7c69f3cadff976048d0bf7103453404a0c6b"
+    },
+    {
+      "name": "notion-create-folder",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "2e412edaad801594a92919caa0a519ea4956aeea7cbd426c41dbef9226b1f857"
+    },
+    {
+      "name": "notion-create-meeting-note",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "5cf81a8c3afe6cf53364d88819f73d314a762869b296c6e63b5b231743102e91"
+    },
+    {
+      "name": "notion-create-pages",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "96b75b5979c85432fdd5b14301a65bc95a40570021a3f404cd40a38f5064f1db"
+    },
+    {
+      "name": "notion-create-suggested-edit",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "c9e20d55dbdee4764f873abcddb2688e45e2237d3bcf5634241f6de7b5a879ba"
+    },
+    {
+      "name": "notion-create-view",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "6bf81b3f25742a0cb885938160f39571c7d6ecf37b5910b53bf673dc6e826fa9"
+    },
+    {
+      "name": "notion-delete-comment",
+      "classified": "write",
+      "vendorEffect": "write",
+      "schemaSha256": "51098957e340cbeb30785f8ccc80370339789dea7a5926e2f1af2f248257b79d"
+    },
+    {
+      "name": "notion-delete-databases",
+      "classified": "write",
+      "vendorEffect": "write",
+      "schemaSha256": "7646df627ab20478a059bc525e042e2e7c7aa5194b64d684fa221834cca1f15b"
+    },
+    {
+      "name": "notion-delete-pages",
+      "classified": "write",
+      "vendorEffect": "write",
+      "schemaSha256": "492d95a5247eeb7e85513992eab1568d0753791fa9ca707dfb7b83cdfd5c3a09"
+    },
+    {
+      "name": "notion-download-attachment",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "a4691cfb56fe09cc9177a47e0537cae23b9772e2084d60c674a19178f0be47e0"
+    },
+    {
+      "name": "notion-download-skill",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "fed962959d919aee326c69ea9542747d1134270a10c671c2f6d2097561230eba"
+    },
+    {
+      "name": "notion-duplicate-page",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "acdb8850228173ec3b4a7d116ebb66b7ea0788e2d8e7cd37a230f6f796919a1a"
+    },
+    {
+      "name": "notion-fetch",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "89be53a79f147b99995d9194ca4c05464564c23a6959b8b00e2ebbe7e718066e"
+    },
+    {
+      "name": "notion-get-async-task",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "1c19126ff695faf665909e9a90dfef06f15ad1d4217e2431db228482cfec30da"
+    },
+    {
+      "name": "notion-get-comments",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "3958e1818b2260c94065ec307a032a39a43d724dae98717bea9e1c44fd0ec294"
+    },
+    {
+      "name": "notion-get-enabled-skills",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "2461f1e17a74e466205cfcabde69a245ef45c731702a92b68cd36ebc5f0fbf0a"
+    },
+    {
+      "name": "notion-get-file-download-urls",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "06e49713ed2aee700a9cd704bab908d8b751fbb70812ecf78e58fc3a60242ee3"
+    },
+    {
+      "name": "notion-get-groups",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "0ecfe1205db3e88246fe18ef203a90b245bb258b55609a66073b034f808f25e4"
+    },
+    {
+      "name": "notion-get-self",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "2461f1e17a74e466205cfcabde69a245ef45c731702a92b68cd36ebc5f0fbf0a"
+    },
+    {
+      "name": "notion-get-session-status",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "29c5458c9ad7d5612723a093639b96747c026695547bec889cb096d5b48fcea1"
+    },
+    {
+      "name": "notion-get-setup-guide",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "2461f1e17a74e466205cfcabde69a245ef45c731702a92b68cd36ebc5f0fbf0a"
+    },
+    {
+      "name": "notion-get-sidebar-tabs",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "2461f1e17a74e466205cfcabde69a245ef45c731702a92b68cd36ebc5f0fbf0a"
+    },
+    {
+      "name": "notion-get-suggested-edit",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "138ba779e952952d0ad4c020fa686f8344de02c290ac630019a9b3cc716f06be"
+    },
+    {
+      "name": "notion-get-teams",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "6f23b0cf5754d1d88c7e773f681e114500eadfd091dc63ee42cdc06d1053a144"
+    },
+    {
+      "name": "notion-get-tool-access",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "19aed1e8778af1d5ef2f4968796421ad4a8a16b50bb7ecde729129ebd66cdcc1"
+    },
+    {
+      "name": "notion-get-users",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "a3b4730746d28759bf4413106ea5d91ea4020fd02116969e58de950707c2ad66"
+    },
+    {
+      "name": "notion-get-version-changes",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "d6a3b89a96cdd8ea7056d41029bfed10cf3ef459e24f13a0d3b4ccdf0fe4ce67"
+    },
+    {
+      "name": "notion-link-meeting-note-to-calendar-event",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "a0d89894c108e965723a95bf80eb6fb2cd40ee94c15f47ec546e299f06ad9ebd"
+    },
+    {
+      "name": "notion-list-favorite-pages",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "b6ab010a9a9c2b0d89e43314276f9d4a7c50510fed82820d4fdf87741155b6b7"
+    },
+    {
+      "name": "notion-list-page-backlinks",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "64de6aab1490693bad1ec00418eaae75422565df2ff1b25b69e9079e91394b0b"
+    },
+    {
+      "name": "notion-list-private-pages",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "b6ab010a9a9c2b0d89e43314276f9d4a7c50510fed82820d4fdf87741155b6b7"
+    },
+    {
+      "name": "notion-list-recent-pages",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "b6ab010a9a9c2b0d89e43314276f9d4a7c50510fed82820d4fdf87741155b6b7"
+    },
+    {
+      "name": "notion-list-session-events",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "0753e4886b10720fc8df974e6c22064af65bc23ed4588f635686145274276e67"
+    },
+    {
+      "name": "notion-list-shared-pages",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "b6ab010a9a9c2b0d89e43314276f9d4a7c50510fed82820d4fdf87741155b6b7"
+    },
+    {
+      "name": "notion-move-pages",
+      "classified": "write",
+      "vendorEffect": "write",
+      "schemaSha256": "0e07a57d458113ebd8c796c58f57b8bcae9191923ca836195880571184d13a3f"
+    },
+    {
+      "name": "notion-query-data-sources",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "527ea937c804ede48c817a5167f8722d1f687fdac9062d5e5e4e727e85f70d3c"
+    },
+    {
+      "name": "notion-query-meeting-notes",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "87d051c0583ee7f725c573551fbe4f096ebbaab76ebefb4e325870dd3ad21a9a"
+    },
+    {
+      "name": "notion-query-multiple-data-sources",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "e9a1c481963628cf555804a7b08b8a669020b2b6f004f45fc12cad1771d0a249"
+    },
+    {
+      "name": "notion-query-sessions",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "4339d80270e9a8ce70fcac486dec237c1f0c54b35d8164e5dba85d31e72a840a"
+    },
+    {
+      "name": "notion-read-session-event",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "45584eba0e5380551f671afac1c5b2a1fd18f645588f0af28d406592a3b03d50"
+    },
+    {
+      "name": "notion-resolve-suggested-edit",
+      "classified": "write",
+      "vendorEffect": "write",
+      "schemaSha256": "89bdcbabc4c30b7e422927ee24d360d833bce91ac37e3c6420ee0091bb9beeba"
+    },
+    {
+      "name": "notion-restore-pages",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "7dd25a672a6d9fdfdd8a42ebf25b8e208eee1a5d85ab1aab88fdb580180867f1"
+    },
+    {
+      "name": "notion-restore-version",
+      "classified": "write",
+      "vendorEffect": "write",
+      "schemaSha256": "438187abe60ee3c87021bb08cfc99df6977e3506bdf3573f948633bab094f7cf"
+    },
+    {
+      "name": "notion-search",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "dc5fce1a99a713ff60c6bd91ed1089b8928bebe77d630f252f9494d5bb4562b2"
+    },
+    {
+      "name": "notion-search-agents",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "d829bee1464092f43ea8ee7e6b152bf5951605c383fa3038c8373c05bbe435b9"
+    },
+    {
+      "name": "notion-search-sessions",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "2e8d1ea44c26e18dd9519842641eac2d4644ad6c082de51c35e78a72ec69fc53"
+    },
+    {
+      "name": "notion-send-message-to-session",
+      "classified": "write",
+      "vendorEffect": "write",
+      "schemaSha256": "612364809a8118d836b824b42d4317845a008a9a9e9b7cb03b3ce923726f008c"
+    },
+    {
+      "name": "notion-set-comment-reaction",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "d8d420a0fccbd38e98d231a2f3c17d3746844c00d7822cdb4b997091e7ef7651"
+    },
+    {
+      "name": "notion-set-discussion-resolved",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "04427c7168e816d7e191b5e39be7c641e8ed4cbbfc0e6b7093d51706879367bb"
+    },
+    {
+      "name": "notion-spawn-session",
+      "classified": "write",
+      "vendorEffect": "write",
+      "schemaSha256": "7ef52162238ea7926daaa944d26504851ec983246b28af9308697ed34af2b97c"
+    },
+    {
+      "name": "notion-stop-session",
+      "classified": "write",
+      "vendorEffect": "write",
+      "schemaSha256": "29c5458c9ad7d5612723a093639b96747c026695547bec889cb096d5b48fcea1"
+    },
+    {
+      "name": "notion-update-comment",
+      "classified": "write",
+      "vendorEffect": "write",
+      "schemaSha256": "148aabe03fb0a1cf430379d1cbcf2507ed50135b8c8db2fda51d176faa03d992"
+    },
+    {
+      "name": "notion-update-data-source",
+      "classified": "write",
+      "vendorEffect": "write",
+      "schemaSha256": "abd8e5f6698fadb2d00d98da4dd67a99d2bc20a54d386441a701282dd5ecac2c"
+    },
+    {
+      "name": "notion-update-folder",
+      "classified": "write",
+      "vendorEffect": "write",
+      "schemaSha256": "62e4a8b06354c1c75acc3fd7a3550a2dfe1d17c18470c9b0d418059817a2269f"
+    },
+    {
+      "name": "notion-update-page",
+      "classified": "write",
+      "vendorEffect": "write",
+      "schemaSha256": "31bfceb724daaaaebe57a476a3b9560e01a3b8365a952b16cbc7973dda7b086f"
+    },
+    {
+      "name": "notion-update-page-favorites",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "a21e478d4045767dea1d8504aef2ae645c2cbd7bce0eed1af0353344be0af296"
+    },
+    {
+      "name": "notion-update-sidebar-tabs",
+      "classified": "write",
+      "vendorEffect": "write",
+      "schemaSha256": "091c5e803d362ce69d86bbc50e8771c3f82e07b34ccf392789d923dd3552287c"
+    },
+    {
+      "name": "notion-update-skill-settings",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "12d938a87f8c6c8e1370c638f469d63f4b50fc9e09958946b87996f5b5bd852e"
+    },
+    {
+      "name": "notion-update-view",
+      "classified": "write",
+      "vendorEffect": null,
+      "schemaSha256": "c4d8471dc0b43fd94639e2e01dcce5c71d0cccfc54b11b6de666065f2160732c"
+    },
+    {
+      "name": "notion-upload-skill",
+      "classified": "write",
+      "vendorEffect": "write",
+      "schemaSha256": "bfe78604dbdf58f75e8495a654298df8d7b35f5e597a7b7613852c9edb485325"
+    },
+    {
+      "name": "notion-view-version",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "43ad1464f7932d92afdc94c3f8c0ea7ed39ae0cd44a245812221a7af1a5d2e25"
+    },
+    {
+      "name": "notion-wait-session",
+      "classified": "read",
+      "vendorEffect": null,
+      "schemaSha256": "6b3e30f29d4400e10cb7f1f5e2a5e4bcd25930b7bc89818bd11725eaf402cea5"
+    }
+  ]
+}

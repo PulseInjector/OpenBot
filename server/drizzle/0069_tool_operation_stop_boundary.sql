@@ -1,0 +1,1 @@
+ALTER TABLE "local_attempts" ADD COLUMN "stop_requested" boolean DEFAULT false NOT NULL;

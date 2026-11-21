@@ -117,8 +117,9 @@ export function BotTools() {
  * saw the roster as it was when the grant arrived, which was before it loaded, so a coworker named
  * like an existing one was never flagged.
  */
-function ProposedBotRender(props: {
+export function ProposedBotRender(props: {
   args: Partial<ProposedBot>;
+  toolCallId?: string;
   respond?: (result: unknown) => Promise<void>;
   result?: string;
 }) {
@@ -139,7 +140,11 @@ function ProposedBotRender(props: {
             }
           : undefined
       }
-      create={async (values: AgentFormValues, chosen: string[]) => {
+      create={async (
+        values: AgentFormValues,
+        chosen: string[],
+        requestId: string,
+      ) => {
         /*
          * TWO CALLS, AND THE SECOND ONE IS PER SKILL. `POST /api/agents` makes the coworker
          * and `POST /api/plugins/grants` puts a skill on it, which is how the profile screen
@@ -152,14 +157,27 @@ function ProposedBotRender(props: {
          * skill they can add in two clicks — each failure is collected and reported, and the
          * card says which ones did not land.
          */
-        const agent = await createAgent.mutateAsync(agentInputFrom(values));
+        const agent = await createAgent.mutateAsync({
+          ...agentInputFrom(values),
+          requestId,
+          confirmation: { skills: chosen, apps: [] },
+        });
         const outcome: CreatedBot = {
           agentId: agent.id,
           failed: [],
           granted: [],
           name: agent.name,
         };
+        const held = await queryClient.fetchQuery({
+          ...agentPluginsQueryOptions(agent.id),
+          staleTime: 0,
+        });
+        const heldSkills = new Set(held.skills.map((skill) => skill.slug));
         for (const slug of chosen) {
+          if (heldSkills.has(slug)) {
+            outcome.granted.push(slug);
+            continue;
+          }
           try {
             await grantPlugin({
               agentId: agent.id,
@@ -185,7 +203,8 @@ function ProposedBotRender(props: {
         invalidatePlugins(queryClient);
         return outcome;
       }}
-      respond={props.respond}
+      requestId={props.toolCallId ? `save_bot:${props.toolCallId}` : undefined}
+      respond={props.toolCallId ? props.respond : undefined}
       result={props.result}
     />
   );

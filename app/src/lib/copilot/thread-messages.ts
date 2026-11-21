@@ -1,6 +1,7 @@
 import type { Message } from "@ag-ui/core";
 import { MessageSchema } from "@ag-ui/core/schemas";
 import { tryClient } from "@/lib/client";
+import { runtimeMode } from "./runtime-mode";
 
 /**
  * The messages a thread already holds, for restoring a conversation somebody comes back to.
@@ -176,6 +177,74 @@ function argumentsOf(args: unknown): string {
   }
 }
 
+/**
+ * One row from the local store's message projection, as the turn it holds.
+ *
+ * `local_messages` stores a turn's content under `value` when it came in with the run and under
+ * `text` when the runner accumulated it from the agent's stream (see `prepareInput` and
+ * `persistAgentEvent` in server/src/local-runtime). The rest of the row is storage bookkeeping the
+ * transcript does not read.
+ *
+ * A folded row also carries tool turns the projection derives at read time: `toolCalls` in the
+ * store's `{id, name, args}` dialect, and `toolCallId` on a row a tool result minted. Both pass
+ * through here rather than being rebuilt, because `withNormalisedToolCalls` and the schema parse
+ * below are the one place that already knows each shape the transcript accepts.
+ */
+function projectedTurn(row: unknown): unknown {
+  if (typeof row !== "object" || row === null) return row;
+  const record = row as Record<string, unknown>;
+  const content = record.content;
+  if (typeof content !== "object" || content === null) return row;
+
+  const projected: Record<string, unknown> = {
+    id: record.messageId,
+    role: record.role,
+  };
+  if ("value" in content) projected.content = content.value;
+  else if ("text" in content) projected.content = content.text;
+  if (Array.isArray(record.toolCalls)) projected.toolCalls = record.toolCalls;
+  if (typeof record.toolCallId === "string")
+    projected.toolCallId = record.toolCallId;
+  return projected;
+}
+
+async function readIntelligenceThread(
+  threadId: string,
+  agentId: string,
+  signal: AbortSignal,
+): Promise<StoredThread> {
+  const response = await tryClient(
+    `/api/copilotkit/threads/${encodeURIComponent(threadId)}/messages?agentId=${encodeURIComponent(agentId)}`,
+    { signal },
+  );
+  if (!response.ok) return UNAVAILABLE_THREAD;
+  const body: unknown = await response.json();
+  const stored =
+    typeof body === "object" && body !== null && "messages" in body
+      ? body.messages
+      : null;
+  return Array.isArray(stored) ? readableTurns(stored) : UNAVAILABLE_THREAD;
+}
+
+async function readLocalThread(
+  threadId: string,
+  signal: AbortSignal,
+): Promise<StoredThread> {
+  const response = await tryClient(
+    `/api/local-runtime/threads/${encodeURIComponent(threadId)}/history`,
+    { signal },
+  );
+  if (!response.ok) return UNAVAILABLE_THREAD;
+  const body: unknown = await response.json();
+  const rows =
+    typeof body === "object" && body !== null && "messages" in body
+      ? body.messages
+      : null;
+  return Array.isArray(rows)
+    ? readableTurns(rows.map(projectedTurn))
+    : UNAVAILABLE_THREAD;
+}
+
 export async function readThreadMessages(
   threadId: string,
   agentId: string,
@@ -187,17 +256,10 @@ export async function readThreadMessages(
 
   try {
     const read = async () => {
-      const response = await tryClient(
-        `/api/copilotkit/threads/${encodeURIComponent(threadId)}/messages?agentId=${encodeURIComponent(agentId)}`,
-        { signal: controller.signal },
-      );
-      if (!response.ok) return UNAVAILABLE_THREAD;
-      const body: unknown = await response.json();
-      const stored =
-        typeof body === "object" && body !== null && "messages" in body
-          ? body.messages
-          : null;
-      return Array.isArray(stored) ? readableTurns(stored) : UNAVAILABLE_THREAD;
+      const mode = await runtimeMode(controller.signal);
+      return mode === "local"
+        ? readLocalThread(threadId, controller.signal)
+        : readIntelligenceThread(threadId, agentId, controller.signal);
     };
 
     const deadline = new Promise<StoredThread>((resolve) => {

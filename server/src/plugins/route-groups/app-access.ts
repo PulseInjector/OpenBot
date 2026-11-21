@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { z } from "zod";
 import { type AppVariables, requireAdmin } from "../../auth/guards";
 import { BROKERED_PROFILE, type BrokerProvider } from "../access";
 import type {
@@ -670,13 +671,37 @@ export function mountAppAccessRoutes({
    * morning, …" is a write — given only its reads, a Bot could list routines and never make one.
    *
    * Every grant is `granted_as = owner`, which keeps each call on the asking person's own account
-   * (`credentialActorFor`). A Bot that already holds any of the app is answered with nothing given.
+   * (`credentialActorFor`). Retries read the original confirmed refs and fill only missing grants.
    */
   routes.post("/for/:agentId/apps/:app/give", requireUser, async (context) => {
     const found = await ownersApp(context);
     if (found instanceof Response) return found;
     const { agentId, inspected } = found;
     const { access } = inspected;
+    const rawBody = await context.req.text();
+    let body: unknown = {};
+    if (rawBody) {
+      try {
+        body = JSON.parse(rawBody);
+      } catch {
+        return context.json({ error: "Invalid app grant confirmation." }, 400);
+      }
+    }
+    const parsed = z
+      .object({
+        requestId: z
+          .string()
+          .regex(/^[A-Za-z0-9:_-]{1,200}$/)
+          .optional(),
+        refs: z.array(z.string().min(1).max(400)).max(1000).optional(),
+      })
+      .safeParse(body);
+    if (!parsed.success)
+      return context.json({ error: "Invalid app grant confirmation." }, 400);
+    const { requestId } = parsed.data;
+    const confirmedRefs = parsed.data.refs
+      ? [...new Set(parsed.data.refs)].sort()
+      : undefined;
     const deny = (reason: string, error: string, status: 403 | 409) =>
       refused(context, {
         app: access.key,
@@ -707,10 +732,6 @@ export function mountAppAccessRoutes({
           ownerId: context.var.actor.id,
         });
     };
-    if (access.granted) {
-      if (access.givenByOwner) await approveShared();
-      return context.json({ granted: [] });
-    }
     const tools = await store.appTools(serverId);
     if (tools.length === 0)
       return deny(
@@ -719,25 +740,56 @@ export function mountAppAccessRoutes({
         409,
       );
     const builtin = inspected.entry?.auth.kind === "builtin";
-    const refs = tools
+    const selectedRefs = tools
       .filter((tool) => builtin || tool.read)
       .map((tool) => tool.ref);
-    if (refs.length === 0)
+    if (selectedRefs.length === 0)
       return deny(
         "no_read_only_tools",
         `${access.displayName} has nothing a Bot can only read with. Ask an admin to choose what this Bot can do with it.`,
         409,
       );
-    for (const ref of refs)
+    if (confirmedRefs?.some((ref) => !selectedRefs.includes(ref)))
+      return deny(
+        "tools_changed",
+        "Some confirmed tools are no longer available to give. Review this app again.",
+        409,
+      );
+    const refs = requestId
+      ? await store.ownerGrantSnapshot({
+          actorId: context.var.actor.id,
+          agentId,
+          appKey: access.key,
+          requestId,
+          refs: confirmedRefs ?? selectedRefs.slice().sort(),
+          confirmedRefs,
+        })
+      : (confirmedRefs ?? selectedRefs);
+    if (refs === null)
+      return deny(
+        "confirmation_conflict",
+        "This request ID already confirms different tools.",
+        409,
+      );
+    if (refs.some((ref) => !selectedRefs.includes(ref)))
+      return deny(
+        "tools_changed",
+        "Some confirmed tools are no longer available to give. Review this app again.",
+        409,
+      );
+    const existingRefs = new Set(await store.ownerGrantedRefs(agentId, refs));
+    const missingRefs = refs.filter((ref) => !existingRefs.has(ref));
+    for (const ref of missingRefs)
       await store.grant("mcp", ref, agentId, actorEmail(context), "owner");
-    await store.recordAppAccessEvent({
-      eventType: "app_access.owner_granted",
-      targetId: access.key,
-      actorUserId: context.var.actor.id,
-      payload: { app: access.key, bot: agentId, refs },
-    });
+    if (missingRefs.length > 0)
+      await store.recordAppAccessEvent({
+        eventType: "app_access.owner_granted",
+        targetId: access.key,
+        actorUserId: context.var.actor.id,
+        payload: { app: access.key, bot: agentId, refs: missingRefs },
+      });
     await approveShared();
-    return context.json({ granted: refs });
+    return context.json({ granted: missingRefs });
   });
 
   /**

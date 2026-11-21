@@ -25,6 +25,18 @@ type Run = {
   settings?: Record<string, string>;
   processEnvironment?: Record<string, string>;
   unavailableHealthPorts?: readonly number[];
+  /** What a listener answers at /api/capabilities, or nothing when unset. */
+  capabilities?: string;
+  /** What the server answers at /api/copilotkit/info; the Intelligence licence JSON by default. */
+  infoPayload?: string;
+  /** Ports the fake `lsof` reports as free, so the script launches a service instead of keeping one. */
+  freePorts?: readonly number[];
+  /**
+   * The fake listener answers only after the script has launched the server, which is what a real
+   * port does: nothing answers `/info` or `/api/capabilities` before the process exists, so the
+   * script must actually start one for the run to get past its own probes.
+   */
+  serverAnswersOnlyOnceLaunched?: boolean;
 };
 
 async function runStartWithStaleServerProbe(
@@ -35,6 +47,10 @@ async function runStartWithStaleServerProbe(
     settings = {},
     processEnvironment = {},
     unavailableHealthPorts = [],
+    capabilities = "",
+    infoPayload = '{"licenseStatus":"valid","mode":"test","agents":{"analyst":{}}}',
+    freePorts = [],
+    serverAnswersOnlyOnceLaunched = false,
   }: Run = {},
 ) {
   const root =
@@ -45,8 +61,13 @@ async function runStartWithStaleServerProbe(
   const logPath = join(directory, "pkill.log");
   const dockerLogPath = join(directory, "docker.log");
   const curlLogPath = join(directory, "curl.log");
+  const modeLogPath = join(directory, "mode.log");
+  const serverUpPath = join(directory, "server-up");
   await mkdir(fakeBin, { recursive: true });
   await mkdir(scripts, { recursive: true });
+  // The server launch is `(cd server && bun ...)`, so the directory has to exist for a run that
+  // starts one. Runs that keep an answering server never reach the `cd`.
+  await mkdir(join(directory, "server"), { recursive: true });
   const environment = [
     "APP_PORT=3010",
     "SERVER_PORT=3001",
@@ -90,7 +111,15 @@ async function runStartWithStaleServerProbe(
 
   await writeExecutable(
     join(fakeBin, "lsof"),
-    '#!/usr/bin/env bash\necho "p123"\necho "cbun"\necho "n*:3001"\n',
+    `#!/usr/bin/env bash
+args="$*"
+for port in $FREE_PORTS; do
+  if [[ "$args" == *"TCP:$port "* ]]; then exit 0; fi
+done
+echo "p123"
+echo "cbun"
+echo "n*:3001"
+`,
   );
   await writeExecutable(
     join(fakeBin, "curl"),
@@ -104,8 +133,15 @@ if [[ "$args" == *"/internal/routines/run"* ]]; then
   printf '${status}'
   exit 0
 fi
+if [[ "$args" == *"/api/copilotkit/info"* || "$args" == *"/api/capabilities"* ]]; then
+  if [ -n "$GATE_UNTIL_LAUNCH" ] && [ ! -f "$SERVER_UP" ]; then exit 0; fi
+fi
+if [[ "$args" == *"/api/capabilities"* ]]; then
+  printf '%s' "$CAPABILITIES"
+  exit 0
+fi
 if [[ "$args" == *"/api/copilotkit/info"* ]]; then
-  printf '{"licenseStatus":"valid","mode":"test","agents":{"analyst":{}}}'
+  printf '%s' "$INFO_PAYLOAD"
   exit 0
 fi
 if [[ "$args" == *"http://localhost:3010/"* ]]; then
@@ -142,7 +178,7 @@ exit 0
   // The Learning container check answers with one line, which start.sh relays.
   await writeExecutable(
     join(fakeBin, "bun"),
-    '#!/usr/bin/env bash\nif [ "$1" = run ] && [ "$2" = - ]; then exec "$REAL_BUN" "$@"; fi\nif [ "$1" = scripts/setup-learning.ts ]; then echo "noise"; echo "LEARNING-CHECK $*"; fi\nexit 0\n',
+    '#!/usr/bin/env bash\nif [ "$1" = run ] && [ "$2" = - ]; then exec "$REAL_BUN" "$@"; fi\nif [ "$1" = scripts/setup-learning.ts ]; then echo "noise"; echo "LEARNING-CHECK $*"; fi\nif [ "$1" = "--env-file=../.env" ]; then printf "%s\\n" "$OPENBOT_RUNTIME_MODE" >> "$MODE_LOG"; touch "$SERVER_UP"; fi\nexit 0\n',
   );
   // What `python3` is on a stock Windows machine: the Microsoft Store alias, which runs nothing. A
   // script that still needed it would stop at the health check in every test in this file.
@@ -161,6 +197,12 @@ exit 0
         PKILL_LOG: logPath,
         DOCKER_LOG: dockerLogPath,
         CURL_LOG: curlLogPath,
+        MODE_LOG: modeLogPath,
+        CAPABILITIES: capabilities,
+        INFO_PAYLOAD: infoPayload,
+        FREE_PORTS: freePorts.join(" "),
+        GATE_UNTIL_LAUNCH: serverAnswersOnlyOnceLaunched ? "1" : "",
+        SERVER_UP: serverUpPath,
         ...processEnvironment,
       },
       stdout: "pipe",
@@ -180,7 +222,10 @@ exit 0
     const curlLog = await Bun.file(curlLogPath)
       .text()
       .catch(() => "");
-    return { exitCode, stdout, stderr, pkillLog, dockerLog, curlLog };
+    const modeLog = await Bun.file(modeLogPath)
+      .text()
+      .catch(() => "");
+    return { exitCode, stdout, stderr, pkillLog, dockerLog, curlLog, modeLog };
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -446,5 +491,191 @@ describe("start.sh selected provider services", () => {
     expect(result.curlLog).toContain("http://localhost:4201/health");
     expect(result.stdout).toContain("agent-langgraph never became ready");
     expect(result.stdout).not.toContain("Ready. http://localhost:3010");
+  });
+});
+
+/**
+ * LOCAL RUNTIME MODE.
+ *
+ * The mode arrives the way every other setting does — the environment, then `.env`, then
+ * `intelligence` — and the run branches on it in three places: the identity probe, the
+ * port-holder refusal, and stage 3. The fake listener answers `/api/capabilities` with
+ * `capabilities` and `/api/copilotkit/info` with `infoPayload`, so each test names exactly what
+ * the port is holding.
+ */
+describe("start.sh local runtime mode", () => {
+  const LOCAL_CAPABILITIES =
+    '{"mode":"local","durableHistory":true,"product":"openbot"}';
+
+  /**
+   * THE MODE IS EXPORTED, NOT JUST READ.
+   *
+   * `RUNTIME_MODE` decides the probe and stage 3 inside this script, but the server child decides
+   * its own runtime from `OPENBOT_RUNTIME_MODE` in its environment. The export is what makes the
+   * two agree when the value came from `.env`: the fake `bun` records what the launch passed, so
+   * the assertion is on what the server would have started as, not on what the script printed.
+   */
+  test.each([".env", "process environment"])(
+    "OPENBOT_RUNTIME_MODE=local from %s reaches the server the script launches",
+    async (source) => {
+      const result = await runStartWithStaleServerProbe(401, {
+        ...(source === ".env"
+          ? { settings: { OPENBOT_RUNTIME_MODE: "local" } }
+          : { processEnvironment: { OPENBOT_RUNTIME_MODE: "local" } }),
+        capabilities: LOCAL_CAPABILITIES,
+        freePorts: [3001],
+        serverAnswersOnlyOnceLaunched: true,
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.modeLog).toContain("local");
+    },
+  );
+
+  test("without the setting, the launched server still defaults to intelligence", async () => {
+    const result = await runStartWithStaleServerProbe(401, {
+      capabilities: LOCAL_CAPABILITIES,
+      freePorts: [3001],
+      serverAnswersOnlyOnceLaunched: true,
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.modeLog).toContain("intelligence");
+  });
+
+  /**
+   * A MATCHING LISTENER IS KEPT, AND STAGE 3 REPORTS THE LOCAL RUN.
+   *
+   * The port is held and answers the local capabilities, so the probe accepts it and the run
+   * finishes. The local mode line replaces the licence line, and the Intelligence login hint is
+   * absent — that hint names a product this mode is not running.
+   */
+  test("keeps a local-mode listener and prints the local mode line, never the login hint", async () => {
+    const result = await runStartWithStaleServerProbe(401, {
+      settings: { OPENBOT_RUNTIME_MODE: "local" },
+      capabilities: LOCAL_CAPABILITIES,
+    });
+
+    expect({ exitCode: result.exitCode, stderr: result.stderr }).toMatchObject({
+      exitCode: 0,
+      stderr: "",
+    });
+    expect(result.stdout).toContain("server: already up on 3001");
+    expect(result.stdout).toContain("local mode · Bots: analyst");
+    expect(result.stdout).not.toContain("licence valid");
+    expect(result.stdout).not.toContain("Check INTELLIGENCE_API_KEY");
+  });
+
+  /**
+   * THE WRONG-MODE PRODUCT LISTENER IS NAMED AND REFUSED, NOT KILLED.
+   *
+   * An OpenBot in Intelligence mode on the port is this product answering the wrong runtime, which
+   * the old probe could only call "something that is not OpenBot". The refusal names the mode the
+   * listener is in, and `pkill` is never invoked: killing is for processes this checkout started.
+   */
+  test("refuses an Intelligence-mode listener when the run is local, naming its mode", async () => {
+    const result = await runStartWithStaleServerProbe(401, {
+      settings: { OPENBOT_RUNTIME_MODE: "local" },
+      capabilities:
+        '{"mode":"intelligence","durableHistory":true,"product":"openbot"}',
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain(
+      "port 3001 is held by OpenBot in 'intelligence' mode, and this run is 'local'",
+    );
+    expect(result.stdout).toContain(
+      "start this script with OPENBOT_RUNTIME_MODE=intelligence",
+    );
+    expect(result.pkillLog).toBe("");
+  });
+
+  test("refuses a local-mode listener when the run is intelligence, naming its mode", async () => {
+    const result = await runStartWithStaleServerProbe(401, {
+      // What a local server actually answers: /info carries no licenseStatus, because local mode
+      // has no licence to report, and /api/capabilities carries the local runtime.
+      capabilities: LOCAL_CAPABILITIES,
+      infoPayload: '{"mode":"local","agents":{"analyst":{}}}',
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain(
+      "port 3001 is held by OpenBot in 'local' mode, and this run is 'intelligence'",
+    );
+    expect(result.pkillLog).toBe("");
+  });
+
+  /**
+   * A LISTENER WITHOUT THE PRODUCT MARKER IS NOT THIS PRODUCT, HOWEVER IT ANSWERS.
+   *
+   * The marker is the whole difference between "an OpenBot in the wrong mode" and "an unrelated
+   * dashboard that happens to say mode local". Without it the refusal stays the generic one, and
+   * still nothing is killed.
+   */
+  test("refuses a listener with no product marker, without killing it", async () => {
+    const result = await runStartWithStaleServerProbe(401, {
+      settings: { OPENBOT_RUNTIME_MODE: "local" },
+      capabilities: '{"mode":"local","durableHistory":true}',
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain("held by something that is not OpenBot");
+    expect(result.pkillLog).toBe("");
+  });
+
+  /**
+   * STAGE 3 KEEPS THE TWO CHECKS THE LICENCE GATE USED TO CARRY.
+   *
+   * The probe accepts marker plus mode; durable history is first verified here, and the Bots
+   * roster still comes from `/info`, so a local run with no Bots stops exactly where the
+   * Intelligence one does.
+   */
+  test("refuses a local listener without durable history", async () => {
+    const result = await runStartWithStaleServerProbe(401, {
+      settings: { OPENBOT_RUNTIME_MODE: "local" },
+      capabilities:
+        '{"mode":"local","durableHistory":false,"product":"openbot"}',
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain(
+      "the server answered mode 'local' with durableHistory false",
+    );
+  });
+
+  test("refuses a local run with no Bots registered", async () => {
+    const result = await runStartWithStaleServerProbe(401, {
+      settings: { OPENBOT_RUNTIME_MODE: "local" },
+      capabilities: LOCAL_CAPABILITIES,
+      infoPayload: '{"mode":"local","agents":{}}',
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stdout).toContain("No Bots registered.");
+    expect(result.stdout).not.toContain("Check INTELLIGENCE_API_KEY");
+  });
+});
+
+describe("start.sh intelligence branches unchanged", () => {
+  /**
+   * THE INTELLIGENCE PROBE READS `/info`, NOT `/api/capabilities`.
+   *
+   * A listener answering the local capabilities alongside the Intelligence `/info` is kept on the
+   * licence answer alone, and no intelligence run ever consults `/api/capabilities`. That is the
+   * "byte for byte" contract: the new branch is additive, and the old path cannot have picked up
+   * a new input.
+   */
+  test("identifies a listener by /info alone and never consults /api/capabilities", async () => {
+    const result = await runStartWithStaleServerProbe(401);
+
+    expect({ exitCode: result.exitCode, stderr: result.stderr }).toMatchObject({
+      exitCode: 0,
+      stderr: "",
+    });
+    expect(result.curlLog).toContain("/api/copilotkit/info");
+    expect(result.curlLog).not.toContain("/api/capabilities");
+    expect(result.stdout).toContain(
+      "licence valid · mode test · Bots: analyst",
+    );
   });
 });

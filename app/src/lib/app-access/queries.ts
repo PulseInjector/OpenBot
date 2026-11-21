@@ -142,7 +142,7 @@ export const appAccessKeys = {
 export type GiveableApp = Pick<
   AppAccess,
   "key" | "displayName" | "logo" | "account"
->;
+> & { refs?: string[] };
 
 /**
  * The apps this person could give their own Bots: switched on and open to owners, and connected

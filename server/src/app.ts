@@ -1,8 +1,8 @@
+import { MAX_IMAGE_BYTES } from "@openbot/shared/attachments";
 import type { Hono as HonoApp, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { serveStatic } from "hono/bun";
-import { MAX_IMAGE_BYTES } from "@openbot/shared/attachments";
 import { enterpriseControls } from "./admin/controls";
 import { createEnterpriseGate } from "./admin/gate";
 import { createEnterpriseAdminRoutes } from "./admin/routes";
@@ -25,10 +25,10 @@ import type { ApprovalService } from "./approvals/service";
 import {
   type AuditEventType,
   type AuditInitiator,
-  auditEventsToCsv,
   AuditQueryError,
   type AuditReader,
   type AuditStore,
+  auditEventsToCsv,
   auditQueryFromUrl,
   DEPLOYMENT_INITIATOR,
   readAuditExportRows,
@@ -89,6 +89,9 @@ import {
   createLearningRoutes,
   type LearningAdminDependencies,
 } from "./learning/routes";
+import { withLocalActorContext } from "./local-runtime/actor-context";
+import { createLocalRuntimeRoutes } from "./local-runtime/routes";
+import type { createLocalRuntimeStore } from "./local-runtime/store";
 import type { MemoryIngestion } from "./memory/ingestion";
 import { createMemoryRoutes } from "./memory/routes";
 import type { MemoryStore } from "./memory/store";
@@ -97,9 +100,9 @@ import { createPasswordRoutes, createSignInRoutes } from "./passwords/routes";
 import type { SignInService } from "./passwords/service";
 import type { OnboardingStore } from "./people/onboarding";
 import { MAX_PAGE, type PeopleStore } from "./people/store";
+import type { BrokerProvider } from "./plugins/access";
 import type { AccountModeSwitch } from "./plugins/account-mode";
 import type { ComposioBroker } from "./plugins/broker";
-import type { BrokerProvider } from "./plugins/access";
 import { createPluginRoutes } from "./plugins/routes";
 import { createSharedUseRoutes } from "./plugins/shared-use-routes";
 import type { SharedUseStore } from "./plugins/shared-use-store";
@@ -178,6 +181,14 @@ const MULTIPART_FRAMING_ALLOWANCE = 64 * 1024;
  */
 export const UPLOAD_BODY_LIMIT_BYTES =
   MAX_IMAGE_BYTES + MULTIPART_FRAMING_ALLOWANCE;
+
+/**
+ * What /api/capabilities names this product by. The startup script's identity probe and the desktop
+ * shell grep for it, because a mode alone does not tell this server from an unrelated listener that
+ * happens to answer 200 on the same port. A constant rather than a setting: no deployment of this
+ * product is ever not this product.
+ */
+const OPENBOT_PRODUCT_MARKER = "openbot";
 
 /**
  * One row for something an administrator did to somebody's access.
@@ -448,6 +459,8 @@ export function createApp(
   identity?: IdentityStore,
   /** The GitHub sign-in callback, built by the caller; mounted behind requireUser ahead of /api/identity. */
   identityGithubCallback?: Hono<{ Variables: AppVariables }>,
+  /** Durable local event store, when local mode is selected. */
+  localRuntimeStore?: ReturnType<typeof createLocalRuntimeStore>,
 ) {
   const app = new Hono<{ Variables: AppVariables }>();
   mountDesktopConnectionFailure(app, desktopHostToken);
@@ -469,6 +482,7 @@ export function createApp(
     context.json({
       mode: config.runtime.mode,
       durableHistory: config.runtime.durableHistory,
+      product: OPENBOT_PRODUCT_MARKER,
       /*
        * Whether a Bot may answer with an interface it wrote itself.
        *
@@ -483,7 +497,7 @@ export function createApp(
       // and a deployment that pays for Intelligence never sees it. See self-host-banner.ts.
       selfHostBanner: selfHostBanner
         ? await selfHostBanner.shown()
-        : config.selfHostBanner,
+        : config.runtime.mode === "intelligence" && config.selfHostBanner,
       /*
        * Whether this is somebody trying OpenBot on their own machine, not an organization's
        * deployment. Onboarding reads it to explain where OpenBot can run, which only the person
@@ -627,6 +641,29 @@ export function createApp(
     : auth && roleRepository
       ? createRequireUser(auth, roleRepository)
       : authenticationUnavailable;
+  if (config.runtime.mode === "local") {
+    app.use("/api/copilotkit/agent/*", requireUser);
+    app.use("/api/copilotkit/agent/*", async (context, next) => {
+      const match = context.req.path.match(
+        /\/agent\/([^/]+)\/(?:run|connect|stop)(?:\/|$)/,
+      );
+      if (!match) return next();
+      let agentId: string;
+      try {
+        agentId = decodeURIComponent(match[1] ?? "");
+      } catch {
+        return context.json({ error: "Invalid Bot id." }, 400);
+      }
+      return withLocalActorContext(
+        {
+          actorId: context.var.actor.id,
+          role: context.var.actor.role,
+          agentId,
+        },
+        next,
+      );
+    });
+  }
   // Enterprise controls: capability switches and the model allowlist in front of the routes they
   // govern, the admin screen's API, and the SCIM verbs the GET/POST auth handler above does not take.
   app.use("/api/*", createEnterpriseGate(requireUser));
@@ -1382,6 +1419,17 @@ export function createApp(
         (await agentProfileStore.get(actor, botId)) !== null
     : async () => true;
 
+  if (config.runtime.mode === "local" && localRuntimeStore) {
+    app.route(
+      "/api/local-runtime",
+      createLocalRuntimeRoutes({
+        store: localRuntimeStore,
+        requireUser,
+        canUseBot,
+      }),
+    );
+  }
+
   // The Bot computer. Acting on a page needs the gateway and the policy it enforces, so both arrive
   // together or the routes are not mounted. An ungoverned computer is not a reduced feature. It is
   // the one shape of this feature that must not exist.
@@ -1920,20 +1968,15 @@ export function createApp(
   }
 
   if (threadIdentity) {
+    const readThread =
+      config.runtime.mode === "intelligence"
+        ? createThreadReader(
+            createIntelligenceClient(config.runtime.intelligence),
+          )
+        : undefined;
     app.route(
       "/api/threads",
-      createThreadRoutes(
-        threadIdentity,
-        requireUser,
-        // config.ts refuses to boot without the full Intelligence contract (see copilot.ts's
-        // header comment), so `config.runtime.intelligence` is never missing here. Built from it
-        // rather than assumed, though: this is the one place besides the runtime mount itself that
-        // needs to reach Intelligence, and it should keep working unmodified if that guarantee ever
-        // loosens and a deployment can legitimately have no reader to build.
-        createThreadReader(
-          createIntelligenceClient(config.runtime.intelligence),
-        ),
-      ),
+      createThreadRoutes(threadIdentity, requireUser, readThread),
     );
   }
 

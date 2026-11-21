@@ -25,6 +25,10 @@ import { HeadlessToolsMiddleware } from "@openbot/toolkit/headless-tools";
 import { sanitizeSeededHistory } from "@openbot/toolkit/history-sanitize";
 import { executeNativeApprovalTool } from "@openbot/toolkit/native-approval";
 import { historyOrEmpty } from "@openbot/toolkit/thread-history";
+import {
+  executeRecordedTool,
+  type ToolOperationRecorder,
+} from "@openbot/toolkit/tool-operation";
 import { defer, from, switchMap } from "rxjs";
 import { z } from "zod";
 import {
@@ -58,6 +62,9 @@ import {
   type LearningRuntime,
 } from "./learning/runtime";
 import type { LearningSettingsStore } from "./learning/settings";
+import { currentLocalActorContext } from "./local-runtime/actor-context";
+import { LocalAgentRunner } from "./local-runtime/runner";
+import type { createLocalRuntimeStore } from "./local-runtime/store";
 import {
   type LoadPersonalMemory,
   PersonalMemoryMiddleware,
@@ -72,17 +79,10 @@ import { grantedToolGuidance, holdsWebSearch } from "./plugins/tools";
 import { UNTRUSTED_GUIDANCE } from "./untrusted-content";
 
 /**
- * The CopilotKit runtime, always in Intelligence mode.
- *
  * Package-declared built-in Bots run as CopilotKit `BuiltInAgent` instances. External Bots are
- * reached over AG-UI as `HttpAgent` instances, so anything that speaks the protocol remains a Bot
- * with no framework adapter here: LangGraph, Pydantic-AI, CrewAI, Mastra, ADK, or a hand-written
- * server.
- *
- * There is no SSE branch. Intelligence is a requirement of the product, not a tier: it owns
- * durable threads, memory and learning, and a deployment without it silently forgets every
- * conversation. config.ts refuses to boot without the full contract, so by the time this runs the
- * settings are present and this file has one mode.
+ * reached over AG-UI as `HttpAgent` instances. Intelligence mode delegates thread storage and
+ * realtime events to CopilotKit; local mode runs those same agents through a PostgreSQL-backed
+ * runner and event log.
  */
 
 /** Resolve the signed-in person for a request. Threads and memory are scoped to whoever this returns. */
@@ -397,6 +397,7 @@ export function builtInAgentConfiguration(
   standingInstructions?: string | null,
   planModel?: PlanModel,
   learnedSkills?: LearnedSkillInvocation,
+  operations?: ToolOperationRecorder,
 ): BuiltInAgentConfiguration {
   if (!apiKey && !planModel) {
     return {
@@ -471,13 +472,22 @@ export function builtInAgentConfiguration(
           tools: allTools.map((tool) => ({
             ...tool,
             execute: (args: unknown, execution?: { toolCallId?: string }) =>
-              executeNativeApprovalTool(
-                tool.name,
-                args,
-                execution?.toolCallId,
-                tools.find((granted) => granted.name === tool.name)?.initiator,
-                () => tool.execute(args),
-              ),
+              executeRecordedTool({
+                recorder: operations,
+                toolCallId: execution?.toolCallId,
+                toolName: tool.name,
+                parameters: args,
+                validate: (parameters) => tool.parameters.parse(parameters),
+                execute: (validatedArgs) =>
+                  executeNativeApprovalTool(
+                    tool.name,
+                    validatedArgs,
+                    execution?.toolCallId,
+                    tools.find((granted) => granted.name === tool.name)
+                      ?.initiator,
+                    () => tool.execute(validatedArgs),
+                  ),
+              }),
           })),
           maxSteps: TOOL_STEPS,
         }
@@ -550,6 +560,7 @@ export async function buildAgents(
   markAttachmentsSent?: MarkAttachmentsSent,
   acquireLearnedSkills?: AcquireLearnedSkills,
   loadPersonalMemory?: LoadPersonalMemory,
+  operations?: ToolOperationRecorder,
 ): Promise<Record<string, AbstractAgent>> {
   let vendors: readonly string[] = [];
   try {
@@ -606,6 +617,7 @@ export async function buildAgents(
           loadAttachment,
           markAttachmentsSent,
           acquireLearnedSkills,
+          operations,
         );
         if (loadPersonalMemory)
           built.use(new PersonalMemoryMiddleware(agent.id, loadPersonalMemory));
@@ -868,6 +880,7 @@ async function buildAgent(
   /** How this run records that those files were sent. See {@link buildAgents}. */
   markAttachmentsSent?: MarkAttachmentsSent,
   acquireLearnedSkills?: AcquireLearnedSkills,
+  operations?: ToolOperationRecorder,
 ): Promise<AbstractAgent> {
   if (agent.type === "unavailable") {
     return new UnavailableAgent(agent);
@@ -971,6 +984,7 @@ async function buildAgent(
       acquireLearnedSkills,
       handoff,
       initiator,
+      operations,
     );
   }
 
@@ -1004,6 +1018,7 @@ async function buildAgent(
             )
           : undefined,
         learnedSkills,
+        operations,
       ),
       {
         observe: observeModelConnection,
@@ -1284,6 +1299,7 @@ function remoteAgentWithStandingRole(
   acquireLearnedSkills?: AcquireLearnedSkills,
   coordination?: HandoffForRun,
   initiator?: AuditInitiator,
+  operations?: ToolOperationRecorder,
 ) {
   /*
    * What this Bot holds, as a second standing message.
@@ -1461,9 +1477,11 @@ function remoteAgentWithStandingRole(
                 unknown
               >,
             },
+            validate: (args) => tool.parameters.parse(args),
             execute: (args) => tool.execute(args),
           })),
           initiator,
+          operations,
         ).run(prepared, next);
       }),
     );
@@ -1612,6 +1630,7 @@ export async function resolveRuntimeAgents(
   markAttachmentsSent?: MarkAttachmentsSent,
   acquireLearnedSkills?: AcquireLearnedSkills,
   loadPersonalMemory?: LoadPersonalMemory,
+  operations?: ToolOperationRecorder,
 ): Promise<Record<string, AbstractAgent>> {
   const all = await loadAgents();
   if (all.length === 0) {
@@ -1648,6 +1667,7 @@ export async function resolveRuntimeAgents(
     markAttachmentsSent,
     acquireLearnedSkills,
     loadPersonalMemory,
+    operations,
   );
 }
 
@@ -1709,9 +1729,16 @@ export function mountCopilotRuntime(
     basePath?: string;
     onRunBusy?: (input: { threadId: string; busy: boolean }) => void;
     learningSettings?: LearningSettingsStore;
+    localRuntime?: {
+      store: ReturnType<typeof createLocalRuntimeStore>;
+      authorizeBot: (input: {
+        actorId: string;
+        role: string;
+        agentId: string;
+      }) => Promise<boolean>;
+    };
   } = {},
 ) {
-  const { intelligence } = config.runtime;
   const { basePath = "/api/copilotkit", onRunBusy, learningSettings } = options;
 
   /**
@@ -1746,6 +1773,48 @@ export function mountCopilotRuntime(
       throw error;
     }
   };
+
+  if (config.runtime.mode === "local") {
+    if (!options.localRuntime) {
+      throw new Error("Local runtime mode requires its durable runner store.");
+    }
+    const runtime = new CopilotRuntime({
+      agents: (async ({ request }: { request: Request }) => {
+        const operations = currentLocalActorContext()?.operations.recorder;
+        return resolver.resolveAgentsForActor(
+          await identifyActor(request),
+          operations ? { operations } : undefined,
+        );
+      }) as never,
+      runner: new LocalAgentRunner(
+        options.localRuntime.store,
+        options.localRuntime.authorizeBot,
+      ),
+      telemetryProperties: {
+        ...(config.accessibility ? { accessibility_title: "OpenBot" } : {}),
+        ...desktopTelemetryProperties(),
+      },
+      ...(config.generativeUi ? { openGenerativeUI: true } : {}),
+      a2ui: { enabled: config.generativeUi },
+    });
+    return {
+      handler: createCopilotHonoHandler({ runtime, basePath }),
+      learning: undefined,
+      runnerConnection: () => ({ url: "", authToken: "" }),
+      threadLock: {
+        acquire: async (input: { runId: string }) => ({ runId: input.runId }),
+        renew: async () => undefined,
+        release: async () => undefined,
+      },
+      agentFor,
+      history: async (input: { threadId: string; actorId: string }) => {
+        const history = await options.localRuntime?.store.readHistory(input);
+        return history?.messages ?? [];
+      },
+    };
+  }
+
+  const { intelligence } = config.runtime;
 
   /*
    * One client, used by the runtime and by anything reading a thread beside it, so a hop reads the

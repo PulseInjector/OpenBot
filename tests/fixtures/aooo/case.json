@@ -1,0 +1,103 @@
+{
+  "caseId": "compass-alder-compatibility",
+  "fictional": true,
+  "sources": [
+    { "id": "REL-24", "batch": 1, "file": "batch-1-release.md" },
+    { "id": "INV-01", "batch": 1, "file": "batch-1-project.md" },
+    { "id": "REL-25", "batch": 2, "file": "batch-2-release.md" },
+    {
+      "id": "REL-25-MIRROR",
+      "batch": 2,
+      "file": "batch-2-release-mirror.md",
+      "duplicateOf": "REL-25"
+    },
+    { "id": "INV-02", "batch": 2, "file": "batch-2-project.md" }
+  ],
+  "expected": {
+    "afterBatch1": [
+      {
+        "id": "legacy-deprecated",
+        "claim": "Alder Client 2.4 still accepts legacy retry mode, but deprecates it with a planned removal in 2.6; Compass production still uses legacy and needs a migration.",
+        "evidence": [
+          {
+            "sourceId": "REL-24",
+            "quote": "`legacy` is deprecated. The planned removal is version 2.6."
+          },
+          {
+            "sourceId": "INV-01",
+            "quote": "The production import worker constructs Alder Client with `retryMode: \"legacy\"`."
+          }
+        ]
+      },
+      {
+        "id": "page-size-unaffected",
+        "claim": "The new default page size is 50, but Compass search reconciliation explicitly requests 100, so this change does not alter that call.",
+        "evidence": [
+          {
+            "sourceId": "REL-24",
+            "quote": "Calls that set `pageSize` explicitly keep their requested size."
+          },
+          {
+            "sourceId": "INV-01",
+            "quote": "The search reconciliation job calls `listDocuments` with `pageSize: 100` explicitly."
+          }
+        ]
+      }
+    ],
+    "afterBatch2": [
+      {
+        "id": "legacy-removed",
+        "claim": "Alder Client 2.5 removed legacy retry mode earlier than planned and rejects it with UNSUPPORTED_RETRY_MODE; this supersedes the earlier 2.6 removal plan.",
+        "evidence": [
+          {
+            "sourceId": "REL-24",
+            "quote": "The planned removal is version 2.6."
+          },
+          {
+            "sourceId": "REL-25",
+            "quote": "Version 2.5 removes `retryMode: \"legacy\"` earlier than the 2.6 plan"
+          },
+          { "sourceId": "REL-25", "quote": "`UNSUPPORTED_RETRY_MODE`" }
+        ]
+      },
+      {
+        "id": "production-still-exposed",
+        "claim": "Compass staging has switched to standard retry mode, but production still uses legacy; do not claim a production migration is complete.",
+        "evidence": [
+          {
+            "sourceId": "INV-02",
+            "quote": "The import worker uses `retryMode: \"standard\"` in staging."
+          },
+          {
+            "sourceId": "INV-02",
+            "quote": "Production still uses `retryMode: \"legacy\"`; no production deployment of the change has been confirmed."
+          }
+        ]
+      },
+      {
+        "id": "page-size-still-unaffected",
+        "claim": "The 50-item default remains, while the Compass search job continues to request 100 explicitly.",
+        "evidence": [
+          {
+            "sourceId": "REL-25",
+            "quote": "Explicit `pageSize` values are still honored."
+          },
+          {
+            "sourceId": "INV-02",
+            "quote": "The search reconciliation job still passes `pageSize: 100` explicitly."
+          }
+        ]
+      }
+    ]
+  },
+  "mustNotAppearAsFindings": [
+    "The admin dashboard color theme is a Compass compatibility issue.",
+    "The admin dashboard CSV export button is a Compass compatibility issue.",
+    "The mirrored REL-25 copy is a second independent compatibility change.",
+    "Compass production has already migrated to standard retry mode."
+  ],
+  "protectedText": [
+    "Project: Compass. Owner: Integration team. This page tracks compatibility with the fictional Alder Client used by Compass.",
+    "Do not change the production deployment window without the Integration team's approval."
+  ]
+}

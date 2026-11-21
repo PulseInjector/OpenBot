@@ -168,29 +168,103 @@ test("pressing creates once and answers with what was made", async () => {
  * skill they can add in two clicks, so the card keeps the coworker and reports the shortfall — and
  * the sentence has to name the skills that did not land, or somebody walks away believing in one.
  */
-test("a skill that did not land is named rather than rounded up", async () => {
+test("partial skills keep the confirmation open and retry with the same request ID", async () => {
   const answers: string[] = [];
-  const partial = {
-    agentId: "agent_2",
-    name: "Renewal Desk",
-    granted: ["find-a-document"],
-    failed: ["check-a-claim"],
-  };
+  const requestIds: string[] = [];
   const view = routed(
     <ProposedBotCard
       args={DRAFT}
-      create={async () => partial}
+      create={async (_values, _skills, requestId) => {
+        requestIds.push(requestId);
+        return requestIds.length === 1
+          ? { ...MADE, granted: ["find-a-document"], failed: ["check-a-claim"] }
+          : MADE;
+      }}
       respond={async (result) => {
         answers.push(String(result));
       }}
     />,
   );
-
   await userEvent.click(await view.findByText("Create it"));
-
+  expect((await view.findByRole("alert")).textContent).toContain(
+    "check-a-claim",
+  );
+  expect(answers).toEqual([]);
+  await userEvent.click(view.getByText("Retry skills"));
   await waitFor(() => expect(answers.length).toBe(1));
-  expect(answers[0]).toContain("/check-a-claim could not be put on it");
-  expect(answers[0]).toContain("/find-a-document");
+  expect(requestIds).toHaveLength(2);
+  expect(requestIds[0]).toBe(requestIds[1]);
+  expect(answers[0]).toBe(botCardAnswer.created(MADE));
+});
+
+test("keeping a partially created Bot reports its existing access without declining it", async () => {
+  const partial = {
+    ...MADE,
+    granted: ["find-a-document"],
+    failed: ["check-a-claim"],
+  };
+  const answers: unknown[] = [];
+  let creates = 0;
+  const view = routed(
+    <ProposedBotCard
+      args={DRAFT}
+      create={async () => {
+        creates++;
+        return partial;
+      }}
+      respond={async (result) => {
+        answers.push(result);
+      }}
+    />,
+  );
+  await userEvent.click(await view.findByText("Create it"));
+  await userEvent.click(await view.findByText("Keep Bot with current skills"));
+  await waitFor(() =>
+    expect(answers).toEqual([botCardAnswer.created(partial)]),
+  );
+  expect(creates).toBe(1);
+});
+
+test("a lost create response retains the transcript request ID across card remounts", async () => {
+  const keys: string[] = [];
+  const create = async (
+    _values: unknown,
+    _skills: string[],
+    requestId: string,
+  ) => {
+    keys.push(requestId);
+    if (keys.length === 1) throw new Error("Response lost after commit");
+    return MADE;
+  };
+  const first = routed(
+    <ProposedBotCard
+      args={DRAFT}
+      create={create}
+      requestId="save_bot:durable-tool-call"
+      respond={async () => {}}
+    />,
+  );
+  await userEvent.click(await first.findByText("Create it"));
+  await first.findByText("Response lost after commit");
+  first.unmount();
+  const answers: unknown[] = [];
+  const second = routed(
+    <ProposedBotCard
+      args={DRAFT}
+      create={create}
+      requestId="save_bot:durable-tool-call"
+      respond={async (result) => {
+        answers.push(result);
+      }}
+    />,
+  );
+  await userEvent.click(await second.findByText("Create it"));
+  await waitFor(() => expect(answers).toHaveLength(1));
+  expect(keys).toEqual([
+    "save_bot:durable-tool-call",
+    "save_bot:durable-tool-call",
+  ]);
+  expect(answers[0]).toContain(MADE.agentId);
 });
 
 /**

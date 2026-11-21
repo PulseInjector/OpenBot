@@ -119,10 +119,19 @@ export function approveBotAppMutationOptions(queryClient: QueryClient) {
 export async function giveBotApp(variables: {
   agentId: string;
   app: string;
+  requestId?: string;
+  refs?: string[];
 }): Promise<{ granted: string[] }> {
   const response = await client(
     `/api/plugins/for/${encodeURIComponent(variables.agentId)}/apps/${encodeURIComponent(variables.app)}/give`,
-    { method: "POST", fallback: "Couldn't give that app to this Bot." },
+    {
+      method: "POST",
+      body: {
+        requestId: variables.requestId ?? crypto.randomUUID(),
+        ...(variables.refs ? { refs: variables.refs } : {}),
+      },
+      fallback: "Couldn't give that app to this Bot.",
+    },
   );
   return response.json();
 }
