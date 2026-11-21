@@ -485,7 +485,7 @@ export function builtInAgentConfiguration(
                     execution?.toolCallId,
                     tools.find((granted) => granted.name === tool.name)
                       ?.initiator,
-                    () => tool.execute(args),
+                    () => tool.execute(validatedArgs),
                   ),
               }),
           })),
