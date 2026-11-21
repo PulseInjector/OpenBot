@@ -27,14 +27,30 @@ function runtimeStore(options?: {
   allowedAgentId?: string;
   eventCount?: number;
 }) {
-  const events = Array.from(
-    { length: options?.eventCount ?? 1 },
-    (_, index) => ({
-      sequence: index + 4,
+  const count = options?.eventCount ?? 1;
+  /*
+   * The rows a real run leaves behind, in the real shape: bookkeeping rows before the envelope
+   * (sequences 1-3 are simply absent from this double), then the agent's own stream with its
+   * RUN_STARTED and RUN_FINISHED around it. The runner's wire only replays the envelope, so a
+   * double without one would emit nothing and prove nothing about replay.
+   */
+  const events = [
+    {
+      sequence: 4,
+      type: "RUN_STARTED",
+      payload: { threadId: "thread-1", runId: "run-1" },
+    },
+    ...Array.from({ length: count }, (_, index) => ({
+      sequence: 5 + index,
       type: "TEXT_MESSAGE_CONTENT",
       payload: { messageId: "message-1", delta: `persisted-${index}` },
-    }),
-  );
+    })),
+    {
+      sequence: 5 + count,
+      type: "RUN_FINISHED",
+      payload: { threadId: "thread-1", runId: "run-1" },
+    },
+  ];
   const cursors: number[] = [];
   let claims = 0;
   const run = { id: "run-1", status: "succeeded" as const };
@@ -94,10 +110,15 @@ test("a completed duplicate run replays persisted events without claiming an att
     agent: new TestAgent({ threadId: runInput.threadId }),
   };
   const events = await withLocalActorContext(actor, () =>
-    lastValueFrom(runner.run(request)),
+    lastValueFrom(runner.run(request).pipe(toArray())),
   );
 
-  expect(events).toEqual({
+  expect(events.map((event) => event.type)).toEqual([
+    EventType.RUN_STARTED,
+    EventType.TEXT_MESSAGE_CONTENT,
+    EventType.RUN_FINISHED,
+  ]);
+  expect(events.at(-2)).toEqual({
     type: EventType.TEXT_MESSAGE_CONTENT,
     messageId: "message-1",
     delta: "persisted-0",
@@ -117,8 +138,8 @@ test("a completed run replays every event across multiple history pages", async 
     lastValueFrom(runner.run(request).pipe(toArray())),
   );
 
-  expect(events).toHaveLength(101);
-  expect(events.at(-1)).toEqual({
+  expect(events).toHaveLength(103);
+  expect(events.at(-2)).toEqual({
     type: EventType.TEXT_MESSAGE_CONTENT,
     messageId: "message-1",
     delta: "persisted-100",
@@ -134,14 +155,14 @@ test("ordinary connect replays from zero even if a sequence header is present", 
     headers: { "x-openbot-event-sequence": "4", "last-event-id": "4" },
   };
   const events = await withLocalActorContext(actor, () =>
-    lastValueFrom(runner.connect(request)),
+    lastValueFrom(runner.connect(request).pipe(toArray())),
   );
 
-  expect(events).toEqual({
-    type: EventType.TEXT_MESSAGE_CONTENT,
-    messageId: "message-1",
-    delta: "persisted-0",
-  });
+  expect(events.map((event) => event.type)).toEqual([
+    EventType.RUN_STARTED,
+    EventType.TEXT_MESSAGE_CONTENT,
+    EventType.RUN_FINISHED,
+  ]);
   expect(fake.cursors).toEqual([0]);
 });
 

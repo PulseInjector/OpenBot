@@ -166,10 +166,23 @@ test("a reader follows only the observed run through commits from a separate pro
     owner: "previous",
     leaseMs: 30_000,
   });
+  // The wire carries only the agent's own run envelope, so the fixture writes what an agent
+  // writes: a RUN_STARTED, its events, a RUN_FINISHED. Bare bookkeeping would never reach a
+  // protocol-following reader and would prove nothing about the replay it is meant to exercise.
+  await store.append(previousToken, {
+    kind: "event",
+    type: "RUN_STARTED",
+    payload: { threadId, runId: previous.requestKey },
+  });
   await store.append(previousToken, {
     kind: "event",
     type: "CUSTOM",
     payload: { name: "previous" },
+  });
+  await store.append(previousToken, {
+    kind: "event",
+    type: "RUN_FINISHED",
+    payload: { threadId, runId: previous.requestKey },
   });
   await store.finishAttempt(previousToken, "succeeded");
   const { run } = await store.submit(submission(threadId));
@@ -178,6 +191,11 @@ test("a reader follows only the observed run through commits from a separate pro
     runId: run.id,
     owner: "active",
     leaseMs: 30_000,
+  });
+  await store.append(token, {
+    kind: "event",
+    type: "RUN_STARTED",
+    payload: { threadId, runId: run.requestKey },
   });
   for (let i = 0; i < 101; i++) {
     await store.append(token, {
@@ -215,17 +233,39 @@ test("a reader follows only the observed run through commits from a separate pro
       `${import.meta.dir}/fixtures/local-runtime-replay-writer.ts`,
     ],
     {
-      stdin: Buffer.from(JSON.stringify({ token, agentId, actorId: ownerId })),
+      stdin: Buffer.from(
+      JSON.stringify({
+        token,
+        agentId,
+        actorId: ownerId,
+        requestKey: run.requestKey,
+      }),
+    ),
       stderr: "inherit",
       stdout: "ignore",
     },
   );
   expect(await writer.exited).toBe(0);
   const events = await replay;
-  expect(events.map((event) => Reflect.get(event, "name"))).toEqual([
-    "previous",
-    ...Array.from({ length: 101 }, (_, i) => `page-${i}`),
-    "last",
+  // The reader's wire: both envelopes of the thread so far, the second closing on the writer's
+  // commit. The `later` run the writer opens afterwards is past the observed run's terminal and
+  // never reaches this reader.
+  expect(
+    events.map((event) => [
+      event.type as string,
+      (Reflect.get(event, "name") as string | undefined) ?? null,
+    ]),
+  ).toEqual([
+    ["RUN_STARTED", null],
+    ["CUSTOM", "previous"],
+    ["RUN_FINISHED", null],
+    ["RUN_STARTED", null],
+    ...Array.from(
+      { length: 101 },
+      (_, i) => ["CUSTOM", `page-${i}`] as (string | null)[],
+    ),
+    ["CUSTOM", "last"],
+    ["RUN_FINISHED", null],
   ]);
 
   const tail = await store.readReplayPage({
@@ -235,9 +275,13 @@ test("a reader follows only the observed run through commits from a separate pro
   });
   expect(tail).toMatchObject({ more: false, terminal: true });
   expect(tail.events[0]?.sequence).toBe(interruptedBeforeApplying);
-  expect(tail.events.at(-2)).toMatchObject({
+  expect(tail.events.at(-3)).toMatchObject({
     type: "CUSTOM",
     payload: { name: "last" },
+  });
+  expect(tail.events.at(-2)).toMatchObject({
+    type: "RUN_FINISHED",
+    payload: { threadId, runId: run.requestKey },
   });
   expect(tail.events.at(-1)).toMatchObject({
     runId: run.id,
@@ -245,7 +289,7 @@ test("a reader follows only the observed run through commits from a separate pro
   });
   expect(
     [...first.events.slice(0, -1), ...tail.events].map((row) => row.sequence),
-  ).toEqual(Array.from({ length: 109 }, (_, i) => i + 1));
+  ).toEqual(Array.from({ length: 113 }, (_, i) => i + 1));
 });
 
 test("one current attempt wins and an expired generation cannot append or start an operation", async () => {
