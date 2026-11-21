@@ -1,7 +1,10 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
-import { currentApprovalContext } from "@openbot/toolkit/continuation";
+import {
+  currentApprovalContext,
+  currentToolCallId,
+} from "@openbot/toolkit/continuation";
 import { cutAtCodeUnits } from "../channels/text";
 
 /**
@@ -480,7 +483,11 @@ function traceCall(
   toolName: string,
   outcome: "succeeded" | "failed",
 ): void {
-  const toolCallId = currentApprovalContext()?.toolCallId;
+  // The approval continuation first (the approval paths enter it), then the recorded wrapper's
+  // own id scope (the channel path holds no continuation but always records through the wrapper);
+  // a call outside both stays anonymous rather than guessing an id.
+  const toolCallId =
+    currentApprovalContext()?.toolCallId ?? currentToolCallId();
   console.info(
     JSON.stringify({
       type: "mcp-call",

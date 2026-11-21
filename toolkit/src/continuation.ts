@@ -28,3 +28,20 @@ export const withApprovalContext = <T>(
 ): Promise<T> => actionContext.run(context, run);
 
 export const currentApprovalContext = () => actionContext.getStore();
+
+/*
+ * The tool call id of the recorded execute in scope. Narrower than the approval context on
+ * purpose: the channel path (copilot's built-in agent) records every tool through
+ * `executeRecordedTool` with no approval continuation to enter, because a continuation there
+ * would claim a resume that path cannot honor. The connector trace still needs the id to join
+ * a physical call to its recorded operation, so the recorder wrapper carries just the id.
+ */
+const toolCallIdContext = new AsyncLocalStorage<string>();
+
+/** Run a callback with a tool call id in scope, for the connector trace to cite. */
+export const withToolCallId = <T>(
+  toolCallId: string,
+  run: () => Promise<T>,
+): Promise<T> => toolCallIdContext.run(toolCallId, run);
+
+export const currentToolCallId = () => toolCallIdContext.getStore();
