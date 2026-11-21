@@ -19,8 +19,9 @@
 //   files          only with --files: `biome check` over the named files, the import-sort and
 //                  assist rules the whole-repo commands do not gate on. Pass the step's own new
 //                  or edited files. Everything after --files belongs to that list.
-//   journey        only with --journey: `bun run verify:aooo <name>`, the isolated acceptance
-//                  runner with its own database and cleanup.
+//   journey        only with --journey: `bun run verify:aooo <path>`, the isolated acceptance
+//                  runner with its own database and cleanup. The path is one repository-relative
+//                  .test.ts file. A bare feature name is rejected by the runner.
 //
 // EXIT 0 when every check passes, 1 when any fails, 2 on a usage error. The table names each failed
 // check; nothing is retried, and the only write is the optional dev-log line.
@@ -28,7 +29,7 @@
 // Usage:
 //   bun scripts/aooo/step-gate.ts server/tests/my-step.test.ts
 //   bun scripts/aooo/step-gate.ts server/tests/my-step.test.ts --files app/src/lib/new.ts --note
-//   bun scripts/aooo/step-gate.ts --journey local-runtime
+//   bun scripts/aooo/step-gate.ts --journey server/tests/local-runtime-http.integration.test.ts
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -51,7 +52,7 @@ for (let i = 0; i < args.length; i++) {
   const arg = args[i];
   if (arg === "--note") note = true;
   else if (arg === "--journey") {
-    journey = args[++i] ?? bail("--journey needs a journey name.");
+    journey = args[++i] ?? bail("--journey needs a repository-relative .test.ts path.");
   } else if (arg === "--files") {
     // Everything after --files belongs to the biome-check scope, flags excepted.
     while (i + 1 < args.length && !args[i + 1].startsWith("--")) {
@@ -71,6 +72,8 @@ const missingBiome = biomeFiles.filter(
 );
 if (missingBiome.length > 0)
   bail(`no such --files path(s): ${missingBiome.join(", ")}`);
+if (journey && !existsSync(resolve(repoRoot, journey)))
+  bail(`no such --journey path: ${journey}`);
 
 type Check = { name: string; cmd: string[] };
 
