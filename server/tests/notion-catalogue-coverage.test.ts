@@ -64,6 +64,22 @@ describe("catalogue coverage against the saved snapshot", () => {
     expect(unreviewed).toEqual([]);
   });
 
+  test("every write the snapshot classified is still on the reviewed list", () => {
+    // The vendor scoping above cannot see a plain write, because first-party MCP listings carry no
+    // destructive hint. The snapshot's own classification is the record of what the last review
+    // decided, so a name dropping off the live list while the tool is still advertised is the
+    // dangerous direction: the tool silently reclassifies as a read and the vendor check stays
+    // green. Verified by breaking: blanking one reviewed name in catalogue.ts passed the two
+    // original checks and failed only this one.
+    const dropped = snapshot.advertised
+      .filter(
+        (row) =>
+          row.classified === "write" && !notion.writeTools.includes(row.name),
+      )
+      .map((row) => row.name);
+    expect(dropped).toEqual([]);
+  });
+
   test("every reviewed writeTools name is still advertised in the snapshot", () => {
     const advertised = new Set(snapshot.advertised.map((row) => row.name));
     expect(notion.writeTools.filter((name) => !advertised.has(name))).toEqual(
