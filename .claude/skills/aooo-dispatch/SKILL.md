@@ -12,11 +12,14 @@ scope may weaken a rule here; a step may only narrow its own fence further.
 
 ## The step
 
-Split the unit into steps before dispatching. One step is one verifiable change: it lands green on
-its own checks, and the design file says what it must prove. Dispatch serially, hardest step first
-when the order allows, and tier the hardest shapes to the strongest model. The next step's brief
-usually depends on what the previous step landed, so a step does not start until its predecessor is
-committed.
+Split the unit into steps before dispatching. One step is one verifiable change. It lands green on
+its own checks, and the design file says what it must prove. Give each step its own
+self-contained section in the design file. The section names the files the step may touch, their
+order, the invariants the step must keep, and the check that proves it. The delegate reads only
+that section and whatever the section explicitly references. Dispatch serially, hardest step
+first when the order allows, and tier the hardest shapes to the strongest model. The next step's
+brief usually depends on what the previous step landed, so a step does not start until its
+predecessor is committed.
 
 ## The dispatch
 
@@ -31,7 +34,9 @@ Every dispatch is short: it cites this file, then states three things and nothin
 ## The fences
 
 - Tracked documents are English. Chat replies may be Chinese.
-- Never modify anything under `tests/fixtures/aooo/`.
+- Never modify the frozen inputs under `tests/fixtures/aooo/` (`case.json`, the batch source
+  files, `initial-page.md`). The directory's README is procedure text, not a frozen input. Correct
+  the README when it is wrong, and record the reason in the commit message.
 - Never kill or restart the shared development stack, and never let a test bind the app's
   documented ports.
 - No credential, token, or private workspace identity in any tracked file or evidence document.
@@ -45,12 +50,13 @@ Every dispatch is short: it cites this file, then states three things and nothin
 ## The verification contract
 
 ```sh
-bun scripts/aooo/step-gate.ts <test files...> --files <the step's new or edited files> [--journey <name>] [--note]
+bun scripts/aooo/step-gate.ts <test files...> --files <the step's new or edited files> [--journey <repository-relative .test.ts path>] [--note]
 ```
 
 The gate runs the workspace typecheck, the frozen-baseline test typecheck, lint, format, and each
 named test file; `--files` adds the import-sort and assist rules over the step's own files;
-`--journey` adds the isolated acceptance runner. The delegate runs it before reporting back.
+`--journey` adds the isolated acceptance runner on one repository-relative `.test.ts` path. The
+delegate runs it before reporting back.
 
 ## The report
 
