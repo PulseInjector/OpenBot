@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { MCPMock } from "@copilotkit/aimock/mcp";
 import { withApprovalContext } from "@openbot/toolkit/continuation";
+import { executeRecordedTool } from "@openbot/toolkit/tool-operation";
 import { callTool, listTools } from "../src/plugins/mcp";
 
 /**
@@ -243,6 +244,32 @@ describe("the connector trace", () => {
 
     const line = JSON.parse(lines[0] as string) as Record<string, unknown>;
     expect(line.toolCallId).toBe("call_trace_1");
+  });
+
+  test("a recorded execute without an approval context still traces its tool call id", async () => {
+    // The channel path (copilot's built-in agent) records its tools through executeRecordedTool
+    // with no approval continuation in scope; the live unit-7 run proved the id was then missing
+    // from every in-run trace line, so the judge could never attribute a physical write. The
+    // recorder wrapper is the one place every recorded path shares, so the id has to travel from
+    // there, not only from the approval context.
+    const recorder = {
+      authorize: async () => {},
+      begin: async () => "operation_1",
+      dispatch: async () => {},
+      settle: async () => {},
+    };
+    const lines = await tracedCalls(() =>
+      executeRecordedTool({
+        recorder,
+        toolCallId: "call_recorded_1",
+        toolName: "search_issues",
+        parameters: { query: "billing" },
+        execute: () => callTool({ url }, "search_issues", { query: "billing" }),
+      }),
+    );
+
+    const line = JSON.parse(lines[0] as string) as Record<string, unknown>;
+    expect(line.toolCallId).toBe("call_recorded_1");
   });
 
   test("a call outside any recorded turn omits the id rather than guessing one", async () => {
