@@ -53,6 +53,6 @@ rules stays where it was recorded.
   acceptance run proves.
 - Do not write a completion record before its checks have run. Record passed, failed, and not run
   separately; a passing startup check is not acceptance.
-- Run each plan segment on its own feature branch, created from `aooo/main`. Open one pull request
-  per segment to `aooo/main` after the segment passes its acceptance. Do not merge the pull
+- Run each plan segment on its own feature branch, created from `main`. Open one pull request
+  per segment to `main` after the segment passes its acceptance. Do not merge the pull
   request before that acceptance.

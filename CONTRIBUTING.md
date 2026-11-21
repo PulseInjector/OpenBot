@@ -9,13 +9,13 @@ and personal notes in `.local/`, which Git ignores; never put them in a tracked 
 
 ## Start a Change
 
-Use `aooo/main` as the fork's integration baseline. It starts at the OpenBot commit selected by the
-aooo bot implementation plan. Do not use the upstream `main` as the base for aooo bot work unless the
-project explicitly decides to update its upstream baseline.
+The fork's `main` is the integration baseline. It starts at the OpenBot commit selected by the aooo
+bot implementation plan and carries the fork's own work. Update the upstream baseline only when the
+project explicitly decides to.
 
-Integrate each plan segment on its own feature branch, created from `aooo/main`. Make each logical
+Integrate each plan segment on its own feature branch, created from `main`. Make each logical
 change as a focused commit on that branch, in dependency order. Push the branch as work progresses.
-After the segment passes its acceptance, open one pull request from that branch to `aooo/main`. Do
+After the segment passes its acceptance, open one pull request from that branch to `main`. Do
 not merge the pull request before that acceptance.
 
 Check the working tree before starting. When a separate branch is needed, use a short lowercase name
@@ -45,7 +45,7 @@ known limitations for the final pull request.
 ## Share and Review
 
 After a segment passes its acceptance, open the segment's pull request in `PulseInjector/aooo-bot`
-with the feature branch as head and `aooo/main` as base. Use the repository's existing pull request
+with the feature branch as head and `main` as base. Use the repository's existing pull request
 template. Answer the template's questions even when the answer is that nothing applies.
 
 File issues through the repository's issue templates. A defect uses the bug report form with the
