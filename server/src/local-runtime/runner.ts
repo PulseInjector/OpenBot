@@ -455,6 +455,33 @@ export class LocalAgentRunner extends AgentRunner {
     };
   }): Promise<void> {
     let cursor = 0;
+    /*
+     * THE WIRE CARRIES ONLY THE AGENT'S OWN RUN ENVELOPES.
+     *
+     * A thread's rows mix two audiences. The agent's stream — RUN_STARTED, its messages and tool
+     * calls, RUN_FINISHED or RUN_ERROR — is what the AG-UI client consumes, and that client
+     * verifies protocol order on its own: the first event of a run stream must be RUN_STARTED or
+     * RUN_ERROR, or it rejects the whole stream at its first event ("First event must be
+     * 'RUN_STARTED'"). Everything written around the agent's stream — run.queued, attempt.started,
+     * the input MESSAGES_SNAPSHOT and message projections `prepareInput` records before the agent
+     * starts, model.usage, the attempt verdicts — is bookkeeping and durable history. Replaying
+     * those rows as protocol events is what ended a real run `succeeded` with an announced browser
+     * call nothing answered (issue #6): the client died at its first event, so the surface-owned
+     * call it was waiting for never arrived, while the server carried on and recorded a clean
+     * finish.
+     *
+     * Filtered HERE, on rows the page has already read, rather than bounded in the store: the
+     * bookkeeping rows stay in the log (the history projection folds them into the messages a
+     * restored thread shows), and the replay's query count and shape stay exactly what they were.
+     * Widening the polling read is not free — this runner's lease poll fails closed on any error,
+     * and heavier reads in the same window showed up as spurious stops.
+     *
+     * A STATE MACHINE, NOT ONE PAIR OF BOUNDS: a connect replay carries the whole thread, which is
+     * several envelopes back to back, so each RUN_STARTED opens a new one and each RUN_FINISHED or
+     * RUN_ERROR closes it. Between envelopes nothing reaches the wire; inside one, every event the
+     * agent streamed does — including kinds added later, whatever their names.
+     */
+    let insideEnvelope = false;
     while (!input.subscriber.closed) {
       const page = await this.store.readReplayPage({
         threadId: input.threadId,
@@ -465,9 +492,16 @@ export class LocalAgentRunner extends AgentRunner {
       });
       for (const row of page.events) {
         if (input.subscriber.closed) return;
+        cursor = row.sequence;
+        if (
+          !insideEnvelope &&
+          row.type !== "RUN_STARTED" &&
+          row.type !== "RUN_ERROR"
+        )
+          continue;
+        insideEnvelope = row.type !== "RUN_FINISHED" && row.type !== "RUN_ERROR";
         const event = eventFromRow(row);
         if (event) input.subscriber.next(event);
-        cursor = row.sequence;
       }
       if (page.more) continue;
       if (page.terminal) {
